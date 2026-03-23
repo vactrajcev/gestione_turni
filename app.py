@@ -4,8 +4,8 @@ import calendar
 from io import BytesIO
 from datetime import datetime
 
-st.set_page_config(page_title="Gestione Turni V22", layout="wide")
-st.title("🗓️ Generatore Turni con Gestione Assenze/Ferie")
+st.set_page_config(page_title="Gestione Turni V23", layout="wide")
+st.title("🗓️ Generatore Turni: Gestione Assenze per Intervallo")
 
 # --- FUNZIONE EXCEL ---
 def to_excel(df, analisi_df, mese_nome, anno):
@@ -17,16 +17,12 @@ def to_excel(df, analisi_df, mese_nome, anno):
 
 # --- SIDEBAR: SELEZIONE PERIODO ---
 st.sidebar.header("Configurazione Periodo")
-mesi_ita = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", 
+mesi_ita = ["Gennaio", "Febbraio", "Marzo", "Apr", "Maggio", "Giugno", 
             "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 
 mese_scelto_nome = st.sidebar.selectbox("Seleziona Mese", mesi_ita, index=datetime.now().month - 1)
 anno_scelto = st.sidebar.number_input("Seleziona Anno", min_value=2024, max_value=2030, value=2026)
 mese_scelto_num = mesi_ita.index(mese_scelto_nome) + 1
-
-# Calcolo giorni del mese scelto per i menu a tendina
-num_giorni_mese = calendar.monthrange(anno_scelto, mese_scelto_num)[1]
-lista_giorni = [f"{g}-{calendar.day_name[calendar.weekday(anno_scelto, mese_scelto_num, g)][:3]}" for g in range(1, num_giorni_mese + 1)]
 
 # --- 1. DATABASE OPERATORI ---
 if 'operatori' not in st.session_state:
@@ -41,63 +37,69 @@ if 'operatori' not in st.session_state:
         {"nome": "MOSTACCHI M.", "ore": 25, "vincoli": []}
     ]
 
-# --- 2. GESTIONE ASSENZE ---
-if 'assenze' not in st.session_state:
-    st.session_state.assenze = []
+# --- 2. GESTIONE ASSENZE (NUOVA LOGICA A INTERVALLO) ---
+if 'assenze_periodi' not in st.session_state:
+    st.session_state.assenze_periodi = []
 
 col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("👥 Operatori e Vincoli")
-    op_data = st.data_editor(
+    op_df = st.data_editor(
         pd.DataFrame(st.session_state.operatori), 
         num_rows="dynamic",
-        key="editor_op",
+        key="editor_op_v23",
         column_config={
             "vincoli": st.column_config.MultiselectColumn("Vincoli", options=["No Weekend", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio"])
         }
     )
 
 with col2:
-    st.subheader("🚫 Assenze / Ferie (Mese Corrente)")
-    assenze_data = st.data_editor(
-        pd.DataFrame(st.session_state.assenze, columns=["Operatore", "Giorno"]),
+    st.subheader("🚫 Inserisci Periodi di Assenza/Ferie")
+    # Tabella per inserire intervalli (es: dal 5 al 12)
+    periodi_df = st.data_editor(
+        pd.DataFrame(st.session_state.assenze_periodi, columns=["Operatore", "Dal_Giorno", "Al_Giorno"]),
         num_rows="dynamic",
-        key="editor_assenze",
+        key="editor_periodi",
         column_config={
-            "Operatore": st.column_config.SelectboxColumn("Operatore", options=op_data['nome'].tolist()),
-            "Giorno": st.column_config.SelectboxColumn("Giorno", options=lista_giorni)
+            "Operatore": st.column_config.SelectboxColumn("Operatore", options=op_df['nome'].tolist()),
+            "Dal_Giorno": st.column_config.NumberColumn("Dal (giorno)", min_value=1, max_value=31, step=1),
+            "Al_Giorno": st.column_config.NumberColumn("Al (giorno)", min_value=1, max_value=31, step=1)
         }
     )
 
-# Funzione per verificare se un operatore è assente in un dato giorno
-def is_assente(nome, giorno, df_assenze):
-    match = df_assenze[(df_assenze['Operatore'] == nome) & (df_assenze['Giorno'] == giorno)]
-    return not match.empty
+# Funzione per mappare i periodi in una lista di giorni vietati
+def get_giorni_vietati(nome, df_periodi):
+    vietati = set()
+    for _, row in df_periodi.iterrows():
+        if row['Operatore'] == nome and pd.notna(row['Dal_Giorno']) and pd.notna(row['Al_Giorno']):
+            for g in range(int(row['Dal_Giorno']), int(row['Al_Giorno']) + 1):
+                vietati.add(g)
+    return vietati
 
 # --- 3. LOGICA DI GENERAZIONE ---
-def genera_turni_equi(anno, mese, df_assenze):
+def genera_turni_v23(anno, mese, df_periodi):
     num_giorni = calendar.monthrange(anno, mese)[1]
     giorni_cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_giorni + 1)]
     
-    nomi = op_data['nome'].tolist()
+    nomi = op_df['nome'].tolist()
     res_df = pd.DataFrame("-", index=nomi, columns=giorni_cols)
     
     ore_effettive = {n: 0 for n in nomi}
     conteggio_notti = {n: 0 for n in nomi} 
-    targets = {row['nome']: row['ore'] * 4 for _, row in op_data.iterrows()}
+    targets = {row['nome']: row['ore'] * 4 for _, row in op_df.iterrows()}
     stato_notte = {n: 0 for n in nomi} 
 
     for g_idx, col in enumerate(giorni_cols):
-        is_we = calendar.weekday(anno, mese, g_idx + 1) >= 5
+        giorno_num = g_idx + 1
+        is_we = calendar.weekday(anno, mese, giorno_num) >= 5
         oggi = []
 
         # --- A. COPERTURA NOTTE (EQUA) ---
         for n in nomi:
             if stato_notte[n] == 1:
-                # Se deve fare la 2° notte ma è assente, salta (errore di pianificazione utente)
-                if is_assente(n, col, df_assenze):
-                    stato_notte[n] = 0
+                if giorno_num in get_giorni_vietati(n, df_periodi):
+                    stato_notte[n] = 0 # Se cade in ferie, il ciclo si rompe
                     continue
                 res_df.at[n, col] = "N"
                 stato_notte[n] = 0
@@ -108,9 +110,8 @@ def genera_turni_equi(anno, mese, df_assenze):
         if res_df[col].tolist().count("N") < 1:
             candidati_n = []
             for n in nomi:
-                v_row = op_data[op_data['nome'] == n]['vincoli'].values[0]
-                v = str(v_row).lower()
-                if n not in oggi and "fa notti" in v and not is_assente(n, col, df_assenze):
+                v = str(op_df[op_df['nome'] == n]['vincoli'].values[0]).lower()
+                if n not in oggi and "fa notti" in v and giorno_num not in get_giorni_vietati(n, df_periodi):
                     if not (is_we and "no weekend" in v):
                         candidati_n.append(n)
             
@@ -128,9 +129,8 @@ def genera_turni_equi(anno, mese, df_assenze):
             while posti_assegnati < t_posti:
                 candidati = []
                 for n in nomi:
-                    v_row = op_data[op_data['nome'] == n]['vincoli'].values[0]
-                    v = str(v_row).lower()
-                    if n not in oggi and not is_assente(n, col, df_assenze):
+                    v = str(op_df[op_df['nome'] == n]['vincoli'].values[0]).lower()
+                    if n not in oggi and giorno_num not in get_giorni_vietati(n, df_periodi):
                         if is_we and "no weekend" in v: continue
                         if t_tipo == "M" and "solo pomeriggio" in v: continue
                         if t_tipo == "P" and ("solo mattina" in v or "no pomeriggio" in v): continue
@@ -145,25 +145,26 @@ def genera_turni_equi(anno, mese, df_assenze):
 
     return res_df, ore_effettive, targets, conteggio_notti
 
+# --- 4. OUTPUT ---
 if st.button(f"🚀 GENERA TURNI {mese_scelto_nome.upper()}"):
-    risultato, ore, targets, notti = genera_turni_equi(anno_scelto, mese_scelto_num, assenze_data)
+    risultato, ore, targets, notti = genera_turni_v23(anno_scelto, mese_scelto_num, periodi_df)
     
     st.subheader(f"📅 Tabella Turni - {mese_scelto_nome} {anno_scelto}")
     st.dataframe(risultato)
     
-    st.subheader("📊 Analisi Equità")
+    st.subheader("📊 Analisi Carico")
     analisi = pd.DataFrame({
         "Notti": [notti[n] for n in risultato.index],
         "Ore Totali": [ore[n] for n in risultato.index],
-        "Target": [targets[n] for n in risultato.index],
-        "% Saturazione": [(ore[n] / targets[n] * 100) if targets[n]>0 else 0 for n in risultato.index]
+        "Saturazione %": [(ore[n] / targets[n] * 100) if targets[n]>0 else 0 for n in risultato.index]
     }, index=risultato.index).round(1)
     st.table(analisi)
 
-    # Verifica Copertura 2-2-1
+    # Verifica 2-2-1
     check = [{"G": c, "M": risultato[c].tolist().count("M"), "P": risultato[c].tolist().count("P"), "N": risultato[c].tolist().count("N")} for c in risultato.columns]
+    st.write("**Verifica 2-2-1 giornaliera:**")
     st.table(pd.DataFrame(check).set_index("G").T)
 
-    # Download Excel
+    # Download
     excel_data = to_excel(risultato, analisi, mese_scelto_nome, anno_scelto)
-    st.download_button(label="📥 Scarica Excel", data=excel_data, file_name=f"turni_{mese_scelto_nome}.xlsx")
+    st.download_button("📥 Scarica Excel", data=excel_data, file_name=f"turni_{mese_scelto_nome}.xlsx")
