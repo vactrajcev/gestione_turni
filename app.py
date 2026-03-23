@@ -2,18 +2,28 @@ import streamlit as st
 import pandas as pd
 import calendar
 from io import BytesIO
+from datetime import datetime
 
-st.set_page_config(page_title="Gestione Turni V17", layout="wide")
-st.title("🗓️ Generatore Turni: Bilanciamento Equo Notti + Vincoli + Download")
+st.set_page_config(page_title="Gestione Turni V21", layout="wide")
+st.title("🗓️ Generatore Turni Professionale")
 
 # --- FUNZIONE EXCEL ---
-def to_excel(df, analisi_df):
+def to_excel(df, analisi_df, mese_nome, anno):
     output = BytesIO()
-    # È necessario che 'xlsxwriter' sia installato
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Tabella Turni')
         analisi_df.to_excel(writer, sheet_name='Analisi Equità')
     return output.getvalue()
+
+# --- SIDEBAR PER SELEZIONE PERIODO ---
+st.sidebar.header("Configurazione Periodo")
+mesi_ita = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", 
+            "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
+
+# Default al mese corrente
+mese_scelto_nome = st.sidebar.selectbox("Seleziona Mese", mesi_ita, index=datetime.now().month - 1)
+anno_scelto = st.sidebar.number_input("Seleziona Anno", min_value=2024, max_value=2030, value=2026)
+mese_scelto_num = mesi_ita.index(mese_scelto_nome) + 1
 
 # 1. DATABASE OPERATORI
 if 'operatori' not in st.session_state:
@@ -28,30 +38,25 @@ if 'operatori' not in st.session_state:
         {"nome": "MOSTACCHI M.", "ore": 25, "vincoli": []}
     ]
 
-# Editor con ELENCO VINCOLI SELEZIONABILI
+st.subheader(f"Configurazione Operatori per {mese_scelto_nome} {anno_scelto}")
 op_data = st.data_editor(
     pd.DataFrame(st.session_state.operatori), 
     num_rows="dynamic",
     column_config={
         "vincoli": st.column_config.MultiselectColumn(
             "Vincoli",
-            options=[
-                "No Weekend", 
-                "Solo Mattina", 
-                "Solo Pomeriggio", 
-                "Fa Notti", 
-                "No Mattina", 
-                "No Pomeriggio"
-            ],
-            help="Seleziona i vincoli per l'operatore"
+            options=["No Weekend", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio"]
         )
     }
 )
  
-def genera_turni_equi():
-    anno, mese = 2026, 4
+def genera_turni_equi(anno, mese):
     num_giorni = calendar.monthrange(anno, mese)[1]
-    giorni_cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_giorni + 1)]
+    # Nomi dei giorni in italiano/inglese abbreviato
+    giorni_cols = []
+    for g in range(1, num_giorni + 1):
+        nome_giorno = calendar.day_name[calendar.weekday(anno, mese, g)][:3]
+        giorni_cols.append(f"{g}-{nome_giorno}")
     
     nomi = op_data['nome'].tolist()
     res_df = pd.DataFrame("-", index=nomi, columns=giorni_cols)
@@ -77,7 +82,6 @@ def genera_turni_equi():
         if res_df[col].tolist().count("N") < 1:
             candidati_n = []
             for n in nomi:
-                # Recupero vincoli in modo sicuro
                 v_row = op_data[op_data['nome'] == n]['vincoli'].values[0]
                 v = str(v_row).lower()
                 if n not in oggi and "fa notti" in v:
@@ -105,9 +109,7 @@ def genera_turni_equi():
                         if t_tipo == "M" and "solo pomeriggio" in v: continue
                         if t_tipo == "P" and ("solo mattina" in v or "no pomeriggio" in v): continue
                         candidati.append(n)
-                
                 if not candidati: break 
-                
                 scelto = min(candidati, key=lambda x: ore_effettive[x] / targets[x] if targets[x]>0 else 0)
                 res_df.at[scelto, col] = t_tipo
                 oggi.append(scelto)
@@ -116,34 +118,31 @@ def genera_turni_equi():
 
     return res_df, ore_effettive, targets, conteggio_notti
 
-if st.button("🚀 GENERA TURNI EQUI"):
-    risultato, ore, targets, notti = genera_turni_equi()
+if st.button(f"🚀 GENERA TURNI PER {mese_scelto_nome.upper()}"):
+    risultato, ore, targets, notti = genera_turni_equi(anno_scelto, mese_scelto_num)
     
-    st.subheader("📅 Tabella Turni (Copertura 2-2-1)")
+    st.subheader(f"📅 Tabella Turni - {mese_scelto_nome} {anno_scelto}")
     st.dataframe(risultato)
     
-    st.subheader("📊 Analisi Equità (Ore e Notti)")
+    st.subheader("📊 Analisi Carico")
     analisi = pd.DataFrame({
         "Notti Totali": [notti[n] for n in risultato.index],
-        "Ore Target": [targets[n] for n in risultato.index],
-        "Ore Effettive": [ore[n] for n in risultato.index],
-        "Saturazione %": [(ore[n] / targets[n] * 100) if targets[n]>0 else 0 for n in risultato.index]
+        "Ore Totali": [ore[n] for n in risultato.index],
+        "Target": [targets[n] for n in risultato.index],
+        "% Saturazione": [(ore[n] / targets[n] * 100) if targets[n]>0 else 0 for n in risultato.index]
     }, index=risultato.index)
     st.table(analisi.round(1))
 
-    st.subheader("✅ Verifica Copertura 2-2-1")
-    check = [{"Giorno": c, "M": risultato[c].tolist().count("M"), "P": risultato[c].tolist().count("P"), "N": risultato[c].tolist().count("N")} for c in risultato.columns]
-    st.write(pd.DataFrame(check).set_index("Giorno").T)
+    # Verifica Copertura 2-2-1
+    check = [{"G": c.split("-")[0], "M": risultato[c].tolist().count("M"), "P": risultato[c].tolist().count("P"), "N": risultato[c].tolist().count("N")} for c in risultato.columns]
+    st.write("**Verifica Copertura Giornaliera:**")
+    st.table(pd.DataFrame(check).set_index("G").T)
 
-    # --- PULSANTE DOWNLOAD ---
-    st.subheader("📥 Download")
-    try:
-        excel_data = to_excel(risultato, analisi)
-        st.download_button(
-            label="Scarica File Excel",
-            data=excel_data,
-            file_name="turni_operatori.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    except Exception as e:
-        st.error(f"Errore durante la creazione del file Excel: {e}")
+    # Download Excel
+    excel_data = to_excel(risultato, analisi, mese_scelto_nome, anno_scelto)
+    st.download_button(
+        label=f"📥 Scarica Excel {mese_scelto_nome}",
+        data=excel_data,
+        file_name=f"turni_{mese_scelto_nome}_{anno_scelto}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
