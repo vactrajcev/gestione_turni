@@ -5,7 +5,7 @@ from io import BytesIO
 from datetime import datetime
 
 # Configurazione Pagina
-st.set_page_config(page_title="Gestione Turni Pro V32", layout="wide")
+st.set_page_config(page_title="Gestione Turni", layout="wide")
 st.title("🗓️ Sistema Gestione Turni - V32")
 st.markdown("### Vincoli, Assenze, Preferenze e Protezione Riposo")
 
