@@ -3,10 +3,10 @@ import pandas as pd
 import calendar
 from io import BytesIO
 
-st.set_page_config(page_title="Gestione Turni V11", layout="wide")
-st.title("🗓️ Generatore Turni: Algoritmo a Rotazione Sfalsata")
+st.set_page_config(page_title="Gestione Turni V12", layout="wide")
+st.title("🗓️ Turnistica: 2 Diurni + 2 Notti + Smonto + Riposo")
 
-# Database Operatori (Invariato)
+# Database Iniziale
 if 'operatori' not in st.session_state:
     st.session_state.operatori = [
         {"nome": "NERI ELENA", "ore": 38, "vincoli": ["No Pomeriggio", "Fa Notti", "No Weekend"]},
@@ -23,91 +23,105 @@ edited_df = st.data_editor(
     pd.DataFrame(st.session_state.operatori),
     num_rows="dynamic",
     column_config={
-        "vincoli": st.column_config.MultiselectColumn("Vincoli", options=["No Weekend", "Solo Mattina", "Solo Pomeriggio", "Solo Notti", "Fa Notti", "No Mattina", "No Pomeriggio", "No Notte"])
+        "vincoli": st.column_config.MultiselectColumn("Vincoli", options=["No Weekend", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio"])
     },
-    key="editor_v11"
+    key="editor_v12"
 )
 
-def calcola_punteggio_equo(op, tipo_turno, is_weekend, ore_tot_mese, g_idx, res_df, giorni_cols):
-    v = [str(i).lower().strip() for i in op.get('vincoli', [])]
-    nome = op['nome']
-    target_mensile = op.get('ore', 0) * 4
-    
-    # --- LOGICA DI SFALSAMENTO (Sequenza N-N-S-R) ---
-    if g_idx > 0:
-        ieri = res_df.at[nome, giorni_cols[g_idx-1]]
-        # Se ieri ha fatto la prima notte del mese o di una sequenza, oggi DEVE fare la seconda
-        if ieri == "N":
-            if g_idx > 1 and res_df.at[nome, giorni_cols[g_idx-2]] == "N":
-                return 999999 # Già fatte 2, oggi SMONTO
-            return 0 if tipo_turno == "N" else 999999
-        
-        # Se l'altro ieri ha finito le 2 notti, oggi è riposo obbligatorio
-        if g_idx > 1 and res_df.at[nome, giorni_cols[g_idx-2]] == "N":
-             return 999999 
-
-    # --- VINCOLI RIGIDI ---
-    if is_weekend and "no weekend" in v: return 999999
-    if tipo_turno == "N" and not ("fa notti" in v or "solo notti" in v): return 999999
-    if "solo mattina" in v and tipo_turno != "M": return 999999
-    
-    # --- BILANCIAMENTO ORE ---
-    saturazione = ore_tot_mese / target_mensile if target_mensile > 0 else 0
-    punteggio = saturazione * 1000
-    
-    # Se iniziamo il mese (g_idx < 3), diamo un piccolo bonus casuale per sfalsare le partenze
-    if g_idx < 3:
-        import random
-        punteggio += random.randint(0, 50)
-
-    return punteggio
-
-if st.button("🚀 GENERA CON SFALSAMENTO INIZIALE"):
+def genera_turni():
     anno, mese = 2026, 4
     num_giorni = calendar.monthrange(anno, mese)[1]
     giorni_cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_giorni + 1)]
     
     op_validi = edited_df[edited_df['nome'].notna()].copy()
-    res_df = pd.DataFrame("-", index=op_validi['nome'].tolist(), columns=giorni_cols)
-    ore_tot_mese = {n: 0 for n in op_validi['nome']}
+    nomi = op_validi['nome'].tolist()
+    res_df = pd.DataFrame("-", index=nomi, columns=giorni_cols)
+    
+    # Stato speciale per i notturnisti: tiene traccia di dove si trovano nella sequenza
+    # 0: Libero, 1: Giorno1, 2: Giorno2, 3: Notte1, 4: Notte2, 5: Smonto, 6: Riposo
+    stati = {n: 0 for n in nomi}
+    ore_effettive = {n: 0 for n in nomi}
 
     for g_idx, col in enumerate(giorni_cols):
         is_we = calendar.weekday(anno, mese, g_idx + 1) >= 5
-        oggi = []
+        assegnati_oggi = []
 
-        # 1. ASSEGNAZIONE NOTTE (Priorità assoluta per creare lo sfalsamento)
-        for turno, ore_t, posti in [("N", 9, 1), ("M", 7, 2), ("P", 8, 2)]:
-            candidati = []
-            for _, op in op_validi.iterrows():
-                if op['nome'] not in oggi:
-                    score = calcola_punteggio_equo(op, turno, is_we, ore_tot_mese[op['nome']], g_idx, res_df, giorni_cols)
-                    if score < 900000:
-                        candidati.append((op['nome'], score))
+        # 1. GESTIONE SEQUENZE OBBLIGATORIE (Chi è già a metà del ciclo)
+        for n in nomi:
+            if stati[n] == 1: # Era Giorno 1 -> Deve fare Giorno 2
+                turno = "M" if "no pomeriggio" in str(op_validi.set_index('nome').at[n, 'vincoli']) else "P"
+                res_df.at[n, col] = turno
+                stati[n] = 2
+                assegnati_oggi.append(n)
+                ore_effettive[n] += 7 if turno == "M" else 8
+            elif stati[n] == 2: # Era Giorno 2 -> Deve fare Notte 1
+                res_df.at[n, col] = "N"
+                stati[n] = 3
+                assegnati_oggi.append(n)
+                ore_effettive[n] += 9
+            elif stati[n] == 3: # Era Notte 1 -> Deve fare Notte 2
+                res_df.at[n, col] = "N"
+                stati[n] = 4
+                assegnati_oggi.append(n)
+                ore_effettive[n] += 9
+            elif stati[n] == 4: # Era Notte 2 -> Smonto
+                stati[n] = 5
+                assegnati_oggi.append(n)
+            elif stati[n] == 5: # Era Smonto -> Riposo
+                stati[n] = 0 # Torna libero dopo il riposo
+
+        # 2. COPERTURA NOTTE (Se manca)
+        if res_df[col].tolist().count("N") < 1:
+            candidati_n = []
+            for n in nomi:
+                if n not in assegnati_oggi and stati[n] == 0:
+                    v = str(op_validi.set_index('nome').at[n, 'vincoli'])
+                    if "fa notti" in v.lower() and not (is_we and "no weekend" in v.lower()):
+                        candidati_n.append(n)
             
-            candidati.sort(key=lambda x: x[1])
-            for s, _ in candidati[:posti]:
-                res_df.at[s, col] = turno
-                ore_tot_mese[s] += ore_t
-                oggi.append(s)
+            if candidati_n:
+                # Scegli chi ha meno ore per bilanciare
+                scelto = min(candidati_n, key=lambda x: ore_effettive[x])
+                res_df.at[scelto, col] = "N"
+                stati[scelto] = 3 # Inizia dalla notte (sfalsamento)
+                assegnati_oggi.append(scelto)
+                ore_effettive[scelto] += 9
 
-    # --- RISULTATI ---
-    st.subheader("📅 Tabella Turni (Sfalsata)")
-    st.dataframe(res_df)
+        # 3. COPERTURA DIURNI (M=2, P=2)
+        for t_tipo, t_ore, t_posti in [("M", 7, 2), ("P", 8, 2)]:
+            posti_mancanti = t_posti - res_df[col].tolist().count(t_tipo)
+            for _ in range(posti_mancanti):
+                candidati = []
+                for n in nomi:
+                    if n not in assegnati_oggi and stati[n] == 0:
+                        v = str(op_validi.set_index('nome').at[n, 'vincoli']).lower()
+                        if is_we and "no weekend" in v: continue
+                        if t_tipo == "M" and "no mattina" in v: continue
+                        if t_tipo == "P" and "no pomeriggio" in v: continue
+                        candidati.append(n)
+                
+                if candidati:
+                    scelto = min(candidati, key=lambda x: ore_effettive[x])
+                    res_df.at[scelto, col] = t_tipo
+                    # Se è un notturnista, facciamolo entrare nella sequenza Giorno->Giorno->Notte
+                    if "fa notti" in str(op_validi.set_index('nome').at[scelto, 'vincoli']).lower():
+                        stati[scelto] = 1
+                    assegnati_oggi.append(scelto)
+                    ore_effettive[scelto] += t_ore
+
+    return res_df, ore_effettive
+
+if st.button("🚀 GENERA CICLO 2+2+SMONTO+RIPOSO"):
+    risultato, ore = genera_turni()
+    st.subheader("📅 Tabella Turni Ciclica")
+    st.dataframe(risultato)
     
-    # Verifica Copertura (Tabella Orizzontale per leggibilità)
+    # Verifica Copertura
+    conteggi = [{"Giorno": c, "M": risultato[c].tolist().count("M"), "P": risultato[c].tolist().count("P"), "N": risultato[c].tolist().count("N")} for c in risultato.columns]
     st.subheader("✅ Verifica Copertura 2-2-1")
-    conteggi = []
-    for c in giorni_cols:
-        l = res_df[c].tolist()
-        conteggi.append({"Giorno": c, "M": l.count("M"), "P": l.count("P"), "N": l.count("N")})
-    st.write(pd.DataFrame(conteggi).set_index("Giorno").T)
+    st.table(pd.DataFrame(conteggi).set_index("Giorno").T)
 
     # Analisi Ore
-    res_df["ORE TOT"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
-    st.subheader("📊 Analisi Carico")
-    analisi = pd.DataFrame({
-        "Target": op_validi.set_index('nome')['ore'] * 4,
-        "Effettive": res_df["ORE TOT"]
-    })
-    analisi["% Sat."] = (analisi["Effettive"] / analisi["Target"] * 100).round(1)
-    st.table(analisi.sort_values("% Sat."))
+    st.subheader("📊 Bilanciamento Ore")
+    analisi = pd.DataFrame({"Ore Effettive": ore.values()}, index=ore.keys())
+    st.table(analisi)
