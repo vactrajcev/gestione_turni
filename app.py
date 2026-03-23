@@ -4,11 +4,12 @@ import calendar
 from io import BytesIO
 
 st.set_page_config(page_title="Gestione Turni V17", layout="wide")
-st.title("🗓️ Generatore Turni: Bilanciamento Equo Notti + Download")
+st.title("🗓️ Generatore Turni: Bilanciamento Equo Notti + Vincoli + Download")
 
-# --- FUNZIONE EXCEL (Da aggiungere) ---
+# --- FUNZIONE EXCEL ---
 def to_excel(df, analisi_df):
     output = BytesIO()
+    # È necessario che 'xlsxwriter' sia installato
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Tabella Turni')
         analisi_df.to_excel(writer, sheet_name='Analisi Equità')
@@ -27,7 +28,25 @@ if 'operatori' not in st.session_state:
         {"nome": "MOSTACCHI M.", "ore": 25, "vincoli": []}
     ]
 
-op_data = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic")
+# Editor con ELENCO VINCOLI SELEZIONABILI
+op_data = st.data_editor(
+    pd.DataFrame(st.session_state.operatori), 
+    num_rows="dynamic",
+    column_config={
+        "vincoli": st.column_config.MultiselectColumn(
+            "Vincoli",
+            options=[
+                "No Weekend", 
+                "Solo Mattina", 
+                "Solo Pomeriggio", 
+                "Fa Notti", 
+                "No Mattina", 
+                "No Pomeriggio"
+            ],
+            help="Seleziona i vincoli per l'operatore"
+        )
+    }
+)
  
 def genera_turni_equi():
     anno, mese = 2026, 4
@@ -58,7 +77,9 @@ def genera_turni_equi():
         if res_df[col].tolist().count("N") < 1:
             candidati_n = []
             for n in nomi:
-                v = str(op_data.set_index('nome').at[n, 'vincoli']).lower()
+                # Recupero vincoli in modo sicuro
+                v_row = op_data[op_data['nome'] == n]['vincoli'].values[0]
+                v = str(v_row).lower()
                 if n not in oggi and "fa notti" in v:
                     if not (is_we and "no weekend" in v):
                         candidati_n.append(n)
@@ -71,21 +92,21 @@ def genera_turni_equi():
                 ore_effettive[scelto] += 9
                 conteggio_notti[scelto] += 1
 
-        # --- B. COPERTURA DIURNI (Corretta per forzare il 2+2) ---
+        # --- B. COPERTURA DIURNI (2M + 2P) ---
         for t_tipo, t_ore, t_posti in [("M", 7, 2), ("P", 8, 2)]:
             posti_assegnati = 0
-            # Cerchiamo di riempire tutti i posti necessari (t_posti)
             while posti_assegnati < t_posti:
                 candidati = []
                 for n in nomi:
-                    v = str(op_data.set_index('nome').at[n, 'vincoli']).lower()
+                    v_row = op_data[op_data['nome'] == n]['vincoli'].values[0]
+                    v = str(v_row).lower()
                     if n not in oggi:
                         if is_we and "no weekend" in v: continue
                         if t_tipo == "M" and "solo pomeriggio" in v: continue
                         if t_tipo == "P" and ("solo mattina" in v or "no pomeriggio" in v): continue
                         candidati.append(n)
                 
-                if not candidati: break # Nessun altro può coprire questo turno
+                if not candidati: break 
                 
                 scelto = min(candidati, key=lambda x: ore_effettive[x] / targets[x] if targets[x]>0 else 0)
                 res_df.at[scelto, col] = t_tipo
@@ -98,7 +119,7 @@ def genera_turni_equi():
 if st.button("🚀 GENERA TURNI EQUI"):
     risultato, ore, targets, notti = genera_turni_equi()
     
-    st.subheader("📅 Tabella Turni (2 Notti di Fila + Bilanciamento)")
+    st.subheader("📅 Tabella Turni (Copertura 2-2-1)")
     st.dataframe(risultato)
     
     st.subheader("📊 Analisi Equità (Ore e Notti)")
@@ -114,14 +135,14 @@ if st.button("🚀 GENERA TURNI EQUI"):
     check = [{"Giorno": c, "M": risultato[c].tolist().count("M"), "P": risultato[c].tolist().count("P"), "N": risultato[c].tolist().count("N")} for c in risultato.columns]
     st.write(pd.DataFrame(check).set_index("Giorno").T)
 
-    # --- PULSANTE DOWNLOAD (Inserito qui) ---
+    # --- PULSANTE DOWNLOAD ---
     st.subheader("📥 Download")
     try:
         excel_data = to_excel(risultato, analisi)
         st.download_button(
             label="Scarica File Excel",
             data=excel_data,
-            file_name="turni_operatori_221.xlsx",
+            file_name="turni_operatori.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     except Exception as e:
