@@ -4,19 +4,20 @@ import calendar
 from io import BytesIO
 
 # Configurazione Pagina
-st.set_page_config(page_title="Gestione Turni V18", layout="wide")
-st.title("🗓️ Generatore Turni Professionale (Equità Notti + Excel)")
+st.set_page_config(page_title="Gestione Turni V20", layout="wide")
+st.title("🗓️ Generatore Turni Professionale (2-2-1 + Equità)")
 
 # --- 1. FUNZIONE EXPORT EXCEL ---
 def to_excel(df, analisi_df):
     output = BytesIO()
     try:
+        # Assicurati che 'xlsxwriter' sia presente nel file requirements.txt
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Tabella Turni')
             analisi_df.to_excel(writer, sheet_name='Analisi Equità')
         return output.getvalue()
     except Exception as e:
-        st.error(f"Errore nella generazione Excel: {e}. Assicurati che 'xlsxwriter' sia installato.")
+        st.error(f"Errore nella generazione Excel: {e}")
         return None
 
 # --- 2. DATABASE OPERATORI ---
@@ -32,7 +33,6 @@ if 'operatori' not in st.session_state:
         {"nome": "MOSTACCHI M.", "ore": 25, "vincoli": []}
     ]
 
-# Editor tabella operatori
 op_data = st.data_editor(
     pd.DataFrame(st.session_state.operatori), 
     num_rows="dynamic",
@@ -44,7 +44,7 @@ op_data = st.data_editor(
     }
 )
 
-# --- 3. LOGICA GENERAZIONE ---
+# --- 3. LOGICA DI GENERAZIONE ---
 def genera_turni_final():
     anno, mese = 2026, 4
     num_giorni = calendar.monthrange(anno, mese)[1]
@@ -56,95 +56,100 @@ def genera_turni_final():
     ore_effettive = {n: 0 for n in nomi}
     conteggio_notti = {n: 0 for n in nomi}
     targets = {row['nome']: row['ore'] * 4 for _, row in op_data.iterrows()}
-    # Stato: 0:libero, 1:G1, 2:G2, 3:N1, 4:N2, 5:Smonto, 6:Riposo
+    # Stato ciclo: 0:libero, 1:G1, 2:G2, 3:N1, 4:N2, 5:Smonto
     stati = {n: 0 for n in nomi}
 
     for g_idx, col in enumerate(giorni_cols):
         is_we = calendar.weekday(anno, mese, g_idx + 1) >= 5
         oggi = []
 
-        # A. PROSECUZIONE CICLI ESISTENTI (Priorità Massima)
+        # A. PROSECUZIONE CICLI (Priorità ai turni già iniziati)
         for n in nomi:
-            if stati[n] == 1: # Era G1 -> G2
-                turno = "M" if "no pomeriggio" in str(op_data.set_index('nome').at[n, 'vincoli']).lower() else "P"
+            v_list = [str(x).lower() for x in (op_data.set_index('nome').at[n, 'vincoli'] if isinstance(op_data.set_index('nome').at[n, 'vincoli'], list) else [])]
+            
+            if stati[n] == 1: # G1 -> G2
+                turno = "M" if "no pomeriggio" in v_list else "P"
                 res_df.at[n, col] = turno
                 stati[n] = 2
                 oggi.append(n)
                 ore_effettive[n] += 7 if turno == "M" else 8
-            elif stati[n] == 2: # Era G2 -> N1
+            elif stati[n] == 2: # G2 -> N1
                 res_df.at[n, col] = "N"
                 stati[n] = 3
                 oggi.append(n)
                 ore_effettive[n] += 9
                 conteggio_notti[n] += 1
-            elif stati[n] == 3: # Era N1 -> N2
+            elif stati[n] == 3: # N1 -> N2
                 res_df.at[n, col] = "N"
                 stati[n] = 4
                 oggi.append(n)
                 ore_effettive[n] += 9
                 conteggio_notti[n] += 1
-            elif stati[n] == 4: # Era N2 -> Smonto
+            elif stati[n] == 4: # N2 -> Smonto
                 stati[n] = 5
                 oggi.append(n)
-            elif stati[n] == 5: # Era Smonto -> Riposo
-                stati[n] = 0 # Torna libero dopo il riposo
+            elif stati[n] == 5: # Smonto -> Libero
+                stati[n] = 0
 
-        # B. COPERTURA NOTTE (Se non coperta da cicli esistenti)
+        # B. COPERTURA NOTTE (Assicura 1 N ogni giorno)
         if res_df[col].tolist().count("N") < 1:
-            candidati_n = [n for n in nomi if n not in oggi and stati[n] == 0]
-            candidati_n = [n for n in candidati_n if "fa notti" in str(op_data.set_index('nome').at[n, 'vincoli']).lower()]
-            if is_we:
-                candidati_n = [n for n in candidati_n if "no weekend" not in str(op_data.set_index('nome').at[n, 'vincoli']).lower()]
+            candidati_n = []
+            for n in nomi:
+                v_list = [str(x).lower() for x in (op_data.set_index('nome').at[n, 'vincoli'] if isinstance(op_data.set_index('nome').at[n, 'vincoli'], list) else [])]
+                if n not in oggi and stati[n] == 0 and "fa notti" in v_list:
+                    if not (is_we and "no weekend" in v_list):
+                        candidati_n.append(n)
             
             if candidati_n:
-                # Scelta equa: chi ha fatto meno notti totali
-                scelto = min(candidati_n, key=lambda x: (conteggio_notti[x], ore_effettive[x] / targets[x]))
+                # Sceglie chi ha fatto meno notti in totale
+                scelto = min(candidati_n, key=lambda x: (conteggio_notti[x], ore_effettive[x]/targets[x] if targets[x]>0 else 0))
                 res_df.at[scelto, col] = "N"
-                stati[scelto] = 3 # Entra nel ciclo dalla prima notte (SFALSAMENTO)
+                stati[scelto] = 3 # Inizia dalla prima notte
                 oggi.append(scelto)
                 ore_effettive[scelto] += 9
                 conteggio_notti[scelto] += 1
 
-        # C. COPERTURA DIURNI (2M + 2P)
+        # C. COPERTURA DIURNI (2 Mattina + 2 Pomeriggio)
         for t_tipo, t_ore, t_posti in [("M", 7, 2), ("P", 8, 2)]:
             posti_mancanti = t_posti - res_df[col].tolist().count(t_tipo)
             for _ in range(posti_mancanti):
-                candidati = [n for n in nomi if n not in oggi and stati[n] == 0]
-                # Filtri vincoli
-                candidati = [n for n in candidati if not (is_we and "no weekend" in str(op_data.set_index('nome').at[n, 'vincoli']).lower())]
-                if t_tipo == "M": candidati = [n for n in candidati if "solo pomeriggio" not in str(op_data.set_index('nome').at[n, 'vincoli']).lower()]
-                if t_tipo == "P": candidati = [n for n in candidati if ("solo mattina" in v or "no pomeriggio" in str(op_data.set_index('nome').at[n, 'vincoli']).lower())]
+                candidati = []
+                for n in nomi:
+                    v_list = [str(x).lower() for x in (op_data.set_index('nome').at[n, 'vincoli'] if isinstance(op_data.set_index('nome').at[n, 'vincoli'], list) else [])]
+                    if n not in oggi and stati[n] == 0:
+                        if is_we and "no weekend" in v_list: continue
+                        if t_tipo == "M" and "solo pomeriggio" in v_list: continue
+                        if t_tipo == "P" and ("solo mattina" in v_list or "no pomeriggio" in v_list): continue
+                        candidati.append(n)
                 
                 if candidati:
-                    scelto = min(candidati, key=lambda x: ore_effettive[x] / targets[x])
+                    scelto = min(candidati, key=lambda x: ore_effettive[x] / targets[x] if targets[x]>0 else 0)
                     res_df.at[scelto, col] = t_tipo
-                    if "fa notti" in str(op_data.set_index('nome').at[scelto, 'vincoli']).lower():
-                        stati[scelto] = 1 # Inizia ciclo diurno
+                    v_list = [str(x).lower() for x in (op_data.set_index('nome').at[scelto, 'vincoli'] if isinstance(op_data.set_index('nome').at[scelto, 'vincoli'], list) else [])]
+                    if "fa notti" in v_list:
+                        stati[scelto] = 1 # Inizia il ciclo G1
                     oggi.append(scelto)
                     ore_effettive[scelto] += t_ore
 
     return res_df, ore_effettive, targets, conteggio_notti
 
-# --- 4. INTERFACCIA RISULTATI ---
-if st.button("🚀 GENERA TURNI EQUI E SCARICA EXCEL"):
+# --- 4. INTERFACCIA E DOWNLOAD ---
+if st.button("🚀 GENERA TURNI E SCARICA EXCEL"):
     risultato, ore, targets, notti = genera_turni_final()
     
-    st.subheader("📅 Tabella Turni Aprile 2026")
+    st.subheader("📅 Tabella Turni (Copertura 2-2-1)")
     st.dataframe(risultato)
     
-    # Analisi Equità
-    st.subheader("📊 Analisi Equità e Carico")
+    st.subheader("📊 Analisi Equità Notti e Ore")
     analisi = pd.DataFrame({
         "Notti Svolte": [notti[n] for n in risultato.index],
-        "Ore Totali": [ore[n] for n in risultato.index],
+        "Ore Effettive": [ore[n] for n in risultato.index],
         "Target Mensile": [targets[n] for n in risultato.index],
         "% Saturazione": [(ore[n]/targets[n]*100) if targets[n]>0 else 0 for n in risultato.index]
     }, index=risultato.index).round(1)
-    
     st.table(analisi)
 
-    # Verifica Copertura 2-2-1
-    st.subheader("✅ Verifica Copertura Giornaliera (2 Mattina, 2 Pomeriggio, 1 Notte)")
+    st.subheader("✅ Verifica Copertura")
     check_data = []
     for c in risultato.columns:
         check_data.append({
@@ -155,12 +160,12 @@ if st.button("🚀 GENERA TURNI EQUI E SCARICA EXCEL"):
         })
     st.table(pd.DataFrame(check_data).set_index("Giorno").T)
 
-    # Pulsante Download
-    file_excel = to_excel(risultato, analisi)
-    if file_excel:
+    # Pulsante di Download
+    file_ex = to_excel(risultato, analisi)
+    if file_ex:
         st.download_button(
             label="📥 Scarica File Excel",
-            data=file_excel,
-            file_name="turni_equi_221.xlsx",
+            data=file_ex,
+            file_name="turni_equi_aprile_2026.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
