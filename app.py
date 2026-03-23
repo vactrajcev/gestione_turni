@@ -3,8 +3,8 @@ import pandas as pd
 import calendar
 from io import BytesIO
 
-st.set_page_config(page_title="Gestione Turni V16", layout="wide")
-st.title("🗓️ Generatore Turni Professionale (2-2-1)")
+st.set_page_config(page_title="Gestione Turni V17", layout="wide")
+st.title("🗓️ Generatore Turni: Bilanciamento Equo Notti")
 
 # 1. DATABASE OPERATORI
 if 'operatori' not in st.session_state:
@@ -21,31 +21,34 @@ if 'operatori' not in st.session_state:
 
 op_data = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic")
 
-def genera_turni_stabili():
+def genera_turni_equi():
     anno, mese = 2026, 4
     num_giorni = calendar.monthrange(anno, mese)[1]
     giorni_cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_giorni + 1)]
     
     nomi = op_data['nome'].tolist()
     res_df = pd.DataFrame("-", index=nomi, columns=giorni_cols)
+    
     ore_effettive = {n: 0 for n in nomi}
+    conteggio_notti = {n: 0 for n in nomi} # <-- NUOVO: Conta quante notti ha fatto ognuno
     targets = {row['nome']: row['ore'] * 4 for _, row in op_data.iterrows()}
-    stato_notte = {n: 0 for n in nomi} # 0:libero, 1:fatta_prima_notte
+    stato_notte = {n: 0 for n in nomi} # 1 se deve fare la seconda notte
 
     for g_idx, col in enumerate(giorni_cols):
         is_we = calendar.weekday(anno, mese, g_idx + 1) >= 5
         oggi = []
 
-        # --- A. COPERTURA NOTTE (1 Operatore) ---
-        # Priorità a chi deve fare la seconda notte di fila
-        percorso_notte = [n for n in nomi if stato_notte[n] == 1]
-        for n in percorso_notte:
-            res_df.at[n, col] = "N"
-            stato_notte[n] = 0 # Ciclo finito
-            oggi.append(n)
-            ore_effettive[n] += 9
+        # --- A. COPERTURA NOTTE (EQUA) ---
+        # 1. Chi deve finire la sequenza (seconda notte)
+        for n in nomi:
+            if stato_notte[n] == 1:
+                res_df.at[n, col] = "N"
+                stato_notte[n] = 0
+                oggi.append(n)
+                ore_effettive[n] += 9
+                conteggio_notti[n] += 1
 
-        # Se manca la notte, cerchiamo un nuovo notturnista
+        # 2. Se serve una nuova notte, scegliamo il notturnista più "scarico"
         if res_df[col].tolist().count("N") < 1:
             candidati_n = []
             for n in nomi:
@@ -53,14 +56,20 @@ def genera_turni_stabili():
                 if n not in oggi and "fa notti" in v:
                     if not (is_we and "no weekend" in v):
                         candidati_n.append(n)
+            
             if candidati_n:
-                scelto = min(candidati_n, key=lambda x: ore_effettive[x] / targets[x])
+                # CRITERIO EQUO: 
+                # Prima guarda chi ha fatto meno NOTTI TOTALI. 
+                # A parità di notti, guarda chi ha meno ORE TOTALI.
+                scelto = min(candidati_n, key=lambda x: (conteggio_notti[x], ore_effettive[x] / targets[x]))
+                
                 res_df.at[scelto, col] = "N"
-                stato_notte[scelto] = 1 # Segna per fare la seconda domani
+                stato_notte[scelto] = 1 # Prenota la seconda notte per domani
                 oggi.append(scelto)
                 ore_effettive[scelto] += 9
+                conteggio_notti[scelto] += 1
 
-        # --- B. COPERTURA DIURNI (2 Mattina + 2 Pomeriggio) ---
+        # --- B. COPERTURA DIURNI (2M + 2P) ---
         for t_tipo, t_ore, t_posti in [("M", 7, 2), ("P", 8, 2)]:
             for _ in range(t_posti):
                 candidati = []
@@ -73,31 +82,31 @@ def genera_turni_stabili():
                         candidati.append(n)
                 
                 if candidati:
+                    # Sceglie chi è più indietro con la percentuale di ore
                     scelto = min(candidati, key=lambda x: ore_effettive[x] / targets[x])
                     res_df.at[scelto, col] = t_tipo
                     oggi.append(scelto)
                     ore_effettive[scelto] += t_ore
 
-    return res_df, ore_effettive, targets
+    return res_df, ore_effettive, targets, conteggio_notti
 
-if st.button("🚀 GENERA TURNI SENZA ERRORI"):
-    risultato, ore, targets = genera_turni_stabili()
-    st.subheader("📅 Tabella Turni")
+if st.button("🚀 GENERA TURNI EQUI"):
+    risultato, ore, targets, notti = genera_turni_equi()
+    
+    st.subheader("📅 Tabella Turni (2 Notti di Fila + Bilanciamento)")
     st.dataframe(risultato)
     
-    # Analisi Ore
-    st.subheader("📊 Bilanciamento Ore")
+    # Analisi Ore e Notti
+    st.subheader("📊 Analisi Equità (Ore e Notti)")
     analisi = pd.DataFrame({
+        "Notti Totali": [notti[n] for n in risultato.index],
         "Ore Target": [targets[n] for n in risultato.index],
-        "Ore Effettive": [ore[n] for n in risultato.index]
+        "Ore Effettive": [ore[n] for n in risultato.index],
+        "Saturazione %": [(ore[n] / targets[n] * 100) if targets[n]>0 else 0 for n in risultato.index]
     }, index=risultato.index)
-    analisi["%"] = (analisi["Ore Effettive"] / analisi["Ore Target"] * 100).round(1)
-    st.table(analisi)
+    st.table(analisi.round(1))
 
     # Verifica 2-2-1
-    st.subheader("✅ Verifica Copertura")
-    check = []
-    for c in risultato.columns:
-        l = risultato[c].tolist()
-        check.append({"Giorno": c, "M": l.count("M"), "P": l.count("P"), "N": l.count("N")})
+    st.subheader("✅ Verifica Copertura 2-2-1")
+    check = [{"Giorno": c, "M": risultato[c].tolist().count("M"), "P": risultato[c].tolist().count("P"), "N": risultato[c].tolist().count("N")} for c in risultato.columns]
     st.write(pd.DataFrame(check).set_index("Giorno").T)
