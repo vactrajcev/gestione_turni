@@ -3,16 +3,13 @@ import pandas as pd
 import calendar
 from io import BytesIO
 
-# --- CONFIGURAZIONE E TITOLO ---
-st.set_page_config(page_title="Backup Turni + Excel", layout="wide")
-st.title("🗓️ Generatore Turni - Versione Stabile con Export Excel")
+# --- CONFIGURAZIONE PAGINA ---
+st.set_page_config(page_title="Gestione Turni - Versione Finale", layout="wide")
+st.title("🗓️ Generatore Turni Professionale")
 
-# --- COSTANTI ---
-VINCOLI_LISTA = ["No Weekend", "Solo Notti", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio", "No Notte"]
-
-# --- INIZIALIZZAZIONE STATO ---
-if 'operatori_backup' not in st.session_state:
-    st.session_state.operatori_backup = [
+# --- DATI INIZIALI ---
+if 'operatori' not in st.session_state:
+    st.session_state.operatori = [
         {"nome": "NERI ELENA", "ore": 38, "vincoli": ["No Pomeriggio", "Fa Notti", "No Weekend"]},
         {"nome": "RISTOVA SIMONA", "ore": 38, "vincoli": ["No Weekend", "Solo Mattina"]},
         {"nome": "CAMMARATA M.", "ore": 38, "vincoli": ["Fa Notti"]},
@@ -23,24 +20,25 @@ if 'operatori_backup' not in st.session_state:
         {"nome": "MOSTACCHI M.", "ore": 25, "vincoli": []}
     ]
 
-# --- INTERFACCIA INPUT ---
+# --- INTERFACCIA ---
 st.subheader("👥 Configurazione Operatori")
 edited_df = st.data_editor(
-    pd.DataFrame(st.session_state.operatori_backup),
+    pd.DataFrame(st.session_state.operatori),
     num_rows="dynamic",
     column_config={
-        "nome": st.column_config.TextColumn("Nome Operatore", width="large"),
-        "vincoli": st.column_config.MultiselectColumn("Vincoli", options=VINCOLI_LISTA, width="medium"),
+        "vincoli": st.column_config.MultiselectColumn(
+            "Vincoli", 
+            options=["No Weekend", "Solo Notti", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio", "No Notte"]
+        ),
         "ore": st.column_config.NumberColumn("Ore Settimanali", min_value=0)
     },
-    key="editor_excel_v1"
+    key="editor_finale"
 )
 
-# --- LOGICA DI CONTROLLO ---
+# --- FUNZIONI DI SUPPORTO ---
 def puo_lavorare(riga_op, tipo_turno, is_weekend, ore_sett_attuali, durata_turno):
     v = [str(i).lower().strip() for i in riga_op.get('vincoli', [])] if isinstance(riga_op.get('vincoli'), list) else []
-    limite = riga_op.get('ore', 0)
-    if ore_sett_attuali + durata_turno > limite: return False
+    if ore_sett_attuali + durata_turno > riga_op.get('ore', 0): return False
     if is_weekend and "no weekend" in v: return False
     if "solo notti" in v and tipo_turno != "N": return False
     if "solo mattina" in v and tipo_turno != "M": return False
@@ -50,66 +48,50 @@ def puo_lavorare(riga_op, tipo_turno, is_weekend, ore_sett_attuali, durata_turno
     if tipo_turno == "P" and "no pomeriggio" in v: return False
     return True
 
-# --- FUNZIONE EXPORT EXCEL ---
 def to_excel(df):
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=True, sheet_name='Turni_Aprile_2026')
-        # Formattazione automatica larghezza colonne
-        worksheet = writer.sheets['Turni_Aprile_2026']
-        for idx, col in enumerate(df.columns):
-            worksheet.set_column(idx + 1, idx + 1, 12)
-    return output.getvalue()
+    try:
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=True, sheet_name='Turni')
+        return output.getvalue()
+    except ImportError:
+        return None
 
-# --- MOTORE DI GENERAZIONE ---
-if st.button("🚀 GENERA TABELLA"):
+# --- GENERAZIONE ---
+if st.button("🚀 GENERA TABELLA TURNI"):
     anno, mese = 2026, 4
     num_giorni = calendar.monthrange(anno, mese)[1]
     giorni_cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_giorni + 1)]
     
-    df_clean = edited_df.copy()
-    df_clean['ore'] = pd.to_numeric(df_clean['ore'], errors='coerce').fillna(0)
-    op_validi = df_clean[df_clean['nome'].notna() & (df_clean['nome'] != "")].copy()
-    
-    if op_validi.empty:
-        st.error("Nessun operatore inserito!")
-    else:
-        nomi = op_validi['nome'].tolist()
-        res_df = pd.DataFrame("-", index=nomi, columns=giorni_cols)
-        ore_tot_mese = {n: 0 for n in nomi}
-        ore_sett_curr = {n: 0 for n in nomi}
+    op_validi = edited_df[edited_df['nome'].notna() & (edited_df['nome'] != "")].copy()
+    res_df = pd.DataFrame("-", index=op_validi['nome'].tolist(), columns=giorni_cols)
+    ore_tot_mese = {n: 0 for n in op_validi['nome']}
+    ore_sett_curr = {n: 0 for n in op_validi['nome']}
 
-        for g_idx, col in enumerate(giorni_cols):
-            wd = calendar.weekday(anno, mese, g_idx + 1)
-            if wd == 0: ore_sett_curr = {n: 0 for n in nomi}
-            is_we = wd >= 5
-            occupati_oggi = []
-
-            for turno, ore_t in [("N", 9), ("M", 7), ("P", 8)]:
-                posti = 1 if turno == "N" else 2
-                validi = [n for n in nomi if n not in occupati_oggi and puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], turno, is_we, ore_sett_curr[n], ore_t)]
-                validi = [v for v in validi if g_idx == 0 or res_df.at[v, giorni_cols[g_idx-1]] != "N"]
-                validi.sort(key=lambda x: ore_tot_mese[x])
-                
-                for s in validi[:posti]:
-                    if res_df.at[s, col] == "-":
-                        res_df.at[s, col] = turno
-                        ore_sett_curr[s] += ore_t
-                        ore_tot_mese[s] += ore_t
-                        occupati_oggi.append(s)
-
-        res_df["TOT ORE"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
-        st.dataframe(res_df)
+    for g_idx, col in enumerate(giorni_cols):
+        wd = calendar.weekday(anno, mese, g_idx + 1)
+        if wd == 0: ore_sett_curr = {n: 0 for n in op_validi['nome']}
         
-        # Bottoni di Download
-        col1, col2 = st.columns(2)
-        with col1:
-            excel_data = to_excel(res_df)
-            st.download_button(
-                label="📥 Scarica in EXCEL",
-                data=excel_data,
-                file_name="turni_aprile_2026.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        with col2:
-            st.download_button("📄 Scarica in CSV", res_df.to_csv().encode('utf-8'), "turni.csv", "text/csv")
+        is_we = wd >= 5
+        oggi = []
+
+        for turno, ore_t in [("N", 9), ("M", 7), ("P", 8)]:
+            posti = 1 if turno == "N" else 2
+            validi = [n for n in op_validi['nome'] if n not in oggi and puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], turno, is_we, ore_sett_curr[n], ore_t)]
+            validi = [v for v in validi if g_idx == 0 or res_df.at[v, giorni_cols[g_idx-1]] != "N"]
+            validi.sort(key=lambda x: ore_tot_mese[x])
+            
+            for s in validi[:posti]:
+                res_df.at[s, col] = turno
+                ore_sett_curr[s] += ore_t
+                ore_tot_mese[s] += ore_t
+                oggi.append(s)
+
+    res_df["TOT ORE"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
+    st.dataframe(res_df)
+    
+    excel_data = to_excel(res_df)
+    if excel_data:
+        st.download_button("📥 Scarica Excel", data=excel_data, file_name="turni.xlsx", mime="application/vnd.ms-excel")
+    else:
+        st.error("Errore: libreria 'xlsxwriter' non installata nel sistema.")
