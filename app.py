@@ -3,13 +3,12 @@ import pandas as pd
 import calendar
 
 # Configurazione Pagina
-st.set_page_config(page_title="Gestione Turni con Limite Ore", layout="wide")
+st.set_page_config(page_title="Gestione Turni Settimanale", layout="wide")
 st.title("🗓️ Generatore Turni Professionale - Aprile 2026")
 
-# Lista Vincoli per la Tendina
+# Lista Vincoli
 VINCOLI_LISTA = ["No Weekend", "Solo Notti", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio", "No Notte"]
 
-# Inizializzazione Dati
 if 'operatori' not in st.session_state:
     st.session_state.operatori = [
         {"nome": "NERI ELENA (38)", "ore": 38, "vincoli": ["No Pomeriggio", "Fa Notti", "No Weekend"]},
@@ -19,22 +18,22 @@ if 'operatori' not in st.session_state:
         {"nome": "SAKLI BESMA (38)", "ore": 38, "vincoli": []}
     ]
 
-st.subheader("👥 Configurazione Personale e Limiti Orari")
+st.subheader("👥 Configurazione Operatori (Ore Settimanali)")
 edited_df = st.data_editor(
     pd.DataFrame(st.session_state.operatori),
     num_rows="dynamic",
     column_config={
         "vincoli": st.column_config.MultiselectColumn("Vincoli", options=VINCOLI_LISTA),
-        "ore": st.column_config.NumberColumn("Ore Contrattuali", min_value=0, help="Limite massimo di ore mensili")
+        "ore": st.column_config.NumberColumn("Ore Settimanali", min_value=0)
     }
 )
 
-def puo_lavorare(riga_op, tipo_turno, is_weekend, ore_attuali, durata_turno):
+def puo_lavorare(riga_op, tipo_turno, is_weekend, ore_settimanali_attuali, durata_turno):
     v = [str(i).lower().strip() for i in riga_op.get('vincoli', [])] if isinstance(riga_op.get('vincoli'), list) else []
     
-    # --- NUOVO CONTROLLO ORE ---
-    limite_ore = riga_op.get('ore', 0)
-    if ore_attuali + durata_turno > limite_ore:
+    # --- CONTROLLO LIMITE SETTIMANALE ---
+    limite_settimanale = riga_op.get('ore', 0)
+    if ore_settimanali_attuali + durata_turno > limite_settimanale:
         return False
     
     # --- CONTROLLO VINCOLI ---
@@ -57,18 +56,28 @@ if st.button("🚀 GENERA TABELLA TURNI"):
     op_validi = df_clean[(df_clean['nome'].notna()) & (df_clean['nome'] != "") & (df_clean['ore'] > 0)].copy()
     
     if op_validi.empty:
-        st.error("Inserisci operatori con ore valide!")
+        st.error("Inserisci operatori con ore settimanali valide!")
     else:
         nomi_op = op_validi['nome'].tolist()
         res_df = pd.DataFrame("-", index=nomi_op, columns=giorni_cols)
-        ore_fatte = {n: 0 for n in nomi_op}
+        
+        # Inizializziamo i contatori
+        ore_totali_mese = {n: 0 for n in nomi_op}
+        ore_settimana_corrente = {n: 0 for n in nomi_op}
 
         for g_idx, col in enumerate(giorni_cols):
-            is_we = calendar.weekday(anno, mese, g_idx + 1) >= 5
-            oggi = []
+            giorno_del_mese = g_idx + 1
+            wd_idx = calendar.weekday(anno, mese, giorno_del_mese)
+            
+            # --- RESET SETTIMANALE: Se è Lunedì (0), azzera il conteggio settimanale ---
+            if wd_idx == 0:
+                ore_settimana_corrente = {n: 0 for n in nomi_op}
+            
+            is_we = wd_idx >= 5
+            oggi_occupati = []
 
             # 1. NOTTE (9h)
-            cand_n = [r['nome'] for _, r in op_validi.iterrows() if puo_lavorare(r, "N", is_we, ore_fatte[r['nome']], 9)]
+            cand_n = [r['nome'] for _, r in op_validi.iterrows() if puo_lavorare(r, "N", is_we, ore_settimana_corrente[r['nome']], 9)]
             scelto_n = None
             for d in cand_n:
                 if g_idx > 0 and res_df.at[d, giorni_cols[g_idx-1]] == "N":
@@ -77,34 +86,43 @@ if st.button("🚀 GENERA TABELLA TURNI"):
             if not scelto_n and cand_n:
                 disp_n = [d for d in cand_n if g_idx == 0 or res_df.at[d, giorni_cols[g_idx-1]] != "N"]
                 if disp_n:
-                    disp_n.sort(key=lambda x: ore_fatte[x])
+                    disp_n.sort(key=lambda x: ore_totali_mese[x])
                     scelto_n = disp_n[0]
             
             if scelto_n:
-                res_df.at[scelto_n, col] = "N"; ore_fatte[scelto_n] += 9; oggi.append(scelto_n)
+                res_df.at[scelto_n, col] = "N"
+                ore_settimana_corrente[scelto_n] += 9
+                ore_totali_mese[scelto_n] += 9
+                oggi_occupati.append(scelto_n)
 
             # 2. MATTINA (7h)
-            cand_m = [n for n in nomi_op if n not in oggi]
-            cand_m = [n for n in cand_m if puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], "M", is_we, ore_fatte[n], 7)]
+            cand_m = [n for n in nomi_op if n not in oggi_occupati]
+            cand_m = [n for n in cand_m if puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], "M", is_we, ore_settimana_corrente[n], 7)]
             cand_m = [d for d in cand_m if g_idx == 0 or res_df.at[d, giorni_cols[g_idx-1]] != "N"]
-            cand_m.sort(key=lambda x: ore_fatte[x])
+            cand_m.sort(key=lambda x: ore_totali_mese[x])
             for s in cand_m[:2]:
-                res_df.at[s, col] = "M"; ore_fatte[s] += 7; oggi.append(s)
+                res_df.at[s, col] = "M"
+                ore_settimana_corrente[s] += 7
+                ore_totali_mese[s] += 7
+                oggi_occupati.append(s)
 
             # 3. POMERIGGIO (8h)
-            cand_p = [n for n in nomi_op if n not in oggi]
-            cand_p = [n for n in cand_p if puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], "P", is_we, ore_fatte[n], 8)]
+            cand_p = [n for n in nomi_op if n not in oggi_occupati]
+            cand_p = [n for n in cand_p if puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], "P", is_we, ore_settimana_corrente[n], 8)]
             cand_p = [d for d in cand_p if g_idx == 0 or res_df.at[d, giorni_cols[g_idx-1]] != "N"]
-            cand_p.sort(key=lambda x: ore_fatte[x])
+            cand_p.sort(key=lambda x: ore_totali_mese[x])
             for s in cand_p[:2]:
-                res_df.at[s, col] = "P"; ore_fatte[s] += 8
+                res_df.at[s, col] = "P"
+                ore_settimana_corrente[s] += 8
+                ore_totali_mese[s] += 8
 
-        res_df["ORE TOT"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
+        res_df["ORE TOTALI MESE"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
+        st.write("### 📅 Tabella Turni con Reset Settimanale")
         st.dataframe(res_df)
         
-        # Alert se qualcuno non arriva alle ore o se mancano coperture
-        st.write("### 📊 Riepilogo Ore")
-        st.table(pd.DataFrame({"Ore Contrattuali": op_validi.set_index('nome')['ore'], "Ore Assegnate": res_df["ORE TOT"]}))
+        st.write("### 📊 Riepilogo Ore Mensili")
+        st.info("Nota: Il limite inserito in tabella è SETTIMANALE. Il totale qui sotto è la somma del mese.")
+        st.table(pd.DataFrame({"Contratto Settimanale": op_validi.set_index('nome')['ore'], "Totale Lavorato Mese": res_df["ORE TOTALI MESE"]}))
         
         csv = res_df.to_csv().encode('utf-8')
-        st.download_button("📥 Scarica Turni", csv, "turni.csv", "text/csv")
+        st.download_button("📥 Scarica Turni", csv, "turni_aprile_settimanale.csv", "text/csv")
