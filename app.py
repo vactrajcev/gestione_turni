@@ -2,87 +2,121 @@ import streamlit as st
 import pandas as pd
 import random
 import calendar
-from datetime import datetime
 
 st.set_page_config(page_title="Gestione Turni 2-2-1", layout="wide")
 
 st.title("🗓️ Generatore Turni Professionale")
-st.markdown("Configura i parametri e genera la tabella per il mese selezionato.")
 
-# --- SIDEBAR: CONFIGURAZIONE ---
+# --- CONFIGURAZIONE ---
 with st.sidebar:
-    st.header("Impostazioni Mese")
+    st.header("1. Impostazioni Mese")
     anno = st.number_input("Anno", 2024, 2030, 2026)
     mese = st.selectbox("Mese", list(range(1, 13)), index=3, format_func=lambda x: calendar.month_name[x])
-    
     st.divider()
-    st.header("Parametri Orari")
-    h_m = st.number_input("Ore Mattina (07-14)", value=7)
-    h_p = st.number_input("Ore Pomeriggio (14-22)", value=8)
-    h_n = st.number_input("Ore Notte (22-07)", value=9)
+    st.header("2. Pesi Orari")
+    h_m, h_p, h_n = 7, 8, 9 # Mattina 7h, Pom 8h, Notte 9h
 
-# --- OPERATORI ---
-st.subheader("👥 Gestione Operatori e Contratti")
+# --- DATABASE OPERATORI ---
 if 'operatori' not in st.session_state:
     st.session_state.operatori = [
-        {"nome": "NERI ELENA (38)", "ore": 38, "vincoli": ["No Pomeriggio", "Fa Notti"]},
-        {"nome": "RISTOVA SIMONA (38)", "ore": 38, "vincoli": ["No Weekend", "Solo Mattina"]},
-        {"nome": "CAMMARATA M. (38)", "ore": 38, "vincoli": ["Fa Notti"]},
-        {"nome": "MISELMI H. (38)", "ore": 38, "vincoli": ["Fa Notti"]},
-        {"nome": "SAKLI BESMA (38)", "ore": 38, "vincoli": []},
-        {"nome": "BERTOLETTI B. (30)", "ore": 30, "vincoli": []},
-        {"nome": "PALMIERI J. (28)", "ore": 28, "vincoli": []},
-        {"nome": "MOSTACCHI M. (25)", "ore": 25, "vincoli": []}
+        {"nome": "NERI ELENA (38)", "vincoli": "No Pomeriggio, Fa Notti"},
+        {"nome": "RISTOVA SIMONA (38)", "vincoli": "No Weekend, Solo Mattina"},
+        {"nome": "CAMMARATA M. (38)", "vincoli": "Fa Notti"},
+        {"nome": "MISELMI H. (38)", "vincoli": "Fa Notti"},
+        {"nome": "SAKLI BESMA (38)", "vincoli": ""},
+        {"nome": "BERTOLETTI B. (30)", "vincoli": ""},
+        {"nome": "PALMIERI J. (28)", "vincoli": ""},
+        {"nome": "MOSTACCHI M. (25)", "vincoli": ""}
     ]
 
-# Tabella editabile per i nomi e ore
+st.subheader("👥 Lista Operatori")
 df_op = pd.DataFrame(st.session_state.operatori)
 edited_df = st.data_editor(df_op, num_rows="dynamic")
 
 # --- LOGICA DI GENERAZIONE ---
-if st.button("🚀 GENERA TURNI APRILE"):
+if st.button("🚀 GENERA TABELLA TURNI"):
     num_giorni = calendar.monthrange(anno, mese)[1]
-    nomi_giorni = []
+    giorni_cols = []
     for g in range(1, num_giorni + 1):
         wd = calendar.weekday(anno, mese, g)
-        nomi_giorni.append(f"{g}-{calendar.day_name[wd][:3]}")
+        giorni_cols.append(f"{g}-{calendar.day_name[wd][:3]}")
 
     nomi_op = edited_df['nome'].tolist()
-    turni_df = pd.DataFrame("-", index=nomi_op + ["ESTERNI"], columns=nomi_giorni)
-    ore_cumulate = {n: 0 for n in nomi_op}
-    ore_cumulate["ESTERNI"] = 0
+    res_df = pd.DataFrame("-", index=nomi_op + ["ESTERNI"], columns=giorni_cols)
 
-    for idx, col in enumerate(nomi_giorni):
+    def puo_lavorare(op, g_idx):
+        if g_idx == 0: return True
+        return res_df.iloc[list(res_df.index).index(op), g_idx-1] != "N"
+
+    for g_idx, col in enumerate(giorni_cols):
         is_we = "Sat" in col or "Sun" in col
-        oggi = []
+        oggi_assegnati = []
 
-        # 1. NOTTE (1 persona)
-        candidati_n = edited_df[edited_df['vincoli'].apply(lambda x: "Fa Notti" in x)]['nome'].tolist() + ["ESTERNI"]
+        # --- 1. NOTTE (1 persona) ---
+        candidati_n = edited_df[edited_df['vincoli'].str.contains("Fa Notti", na=False)]['nome'].tolist() + ["ESTERNI"]
         scelto_n = None
+        # Blocco di 2 notti
         for d in candidati_n:
-            if idx > 0 and turni_df.at[d, nomi_giorni[idx-1]] == "N" and (idx == 1 or turni_df.at[d, nomi_giorni[idx-2]] != "N"):
-                scelto_n = d
+            if g_idx > 0 and res_df.at[d, giorni_cols[g_idx-1]] == "N":
+                if g_idx == 1 or res_df.at[d, giorni_cols[g_idx-2]] != "N":
+                    scelto_n = d
         if not scelto_n:
-            disp = [d for d in candidati_n if (idx == 0 or turni_df.at[d, nomi_giorni[idx-1]] != "N")]
-            scelto_n = random.choice(disp) if disp else "ESTERNI"
-        turni_df.at[scelto_n, col] = "N"; ore_cumulate[scelto_n] += h_n; oggi.append(scelto_n)
+            disp_n = [d for d in candidati_n if puo_lavorare(d, g_idx)]
+            scelto_n = random.choice(disp_n) if disp_n else "ESTERNI"
+        res_df.at[scelto_n, col] = "N"
+        oggi_assegnati.append(scelto_n)
 
-        # 2. MATTINA (2 persone)
-        # Logica semplificata per l'esempio app
-        candidati_m = [d for d in nomi_op if d not in oggi and (idx == 0 or turni_df.at[d, nomi_giorni[idx-1]] != "N")]
-        for d in candidati_m[:2]:
-            turni_df.at[d, col] = "M"; ore_cumulate[d] += h_m; oggi.append(d)
+        # --- 2. MATTINA (2 persone) ---
+        m_count = 0
+        # Simona priorità feriale
+        if not is_we and puo_lavorare("RISTOVA SIMONA (38)", g_idx):
+            res_df.at["RISTOVA SIMONA (38)", col] = "M"
+            oggi_assegnati.append("RISTOVA SIMONA (38)")
+            m_count += 1
+        
+        candidati_m = [d for d in nomi_op if d not in oggi_assegnati and puo_lavorare(d, g_idx)]
+        candidati_m = [d for d in candidati_m if not (is_we and "RISTOVA" in d)]
+        
+        # Elena ha priorità in mattina perché non fa pomeriggi
+        if "NERI ELENA (38)" in candidati_m and m_count < 2:
+            res_df.at["NERI ELENA (38)", col] = "M"
+            oggi_assegnati.append("NERI ELENA (38)")
+            m_count += 1
+            candidati_m.remove("NERI ELENA (38)")
 
-        # 3. POMERIGGIO (2 persone)
-        candidati_p = [d for d in nomi_op if d not in oggi and (idx == 0 or turni_df.at[d, nomi_giorni[idx-1]] != "N")]
-        for d in candidati_p[:2]:
-            turni_df.at[d, col] = "P"; ore_cumulate[d] += h_p
+        while m_count < 2 and candidati_m:
+            s = random.choice(candidati_m)
+            res_df.at[s, col] = "M"
+            oggi_assegnati.append(s)
+            candidati_m.remove(s)
+            m_count += 1
 
-    # Totali
-    turni_df["TOT ORE"] = turni_df.apply(lambda r: sum([h_m if x=='M' else h_p if x=='P' else h_n if x=='N' else 0 for x in r]), axis=1)
+        # --- 3. POMERIGGIO (2 persone) ---
+        p_count = 0
+        candidati_p = [d for d in nomi_op if d not in oggi_assegnati and puo_lavorare(d, g_idx)]
+        # Filtro vincoli
+        candidati_p = [d for d in candidati_p if "NERI" not in d and "RISTOVA" not in d]
+        
+        while p_count < 2 and candidati_p:
+            s = random.choice(candidati_p)
+            res_df.at[s, col] = "P"
+            oggi_assegnati.append(s)
+            candidati_p.remove(s)
+            p_count += 1
+
+    # --- CALCOLO ORE E CONTEGGI ---
+    res_df["ORE TOT"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
     
-    st.success("Tabella Generata!")
-    st.dataframe(turni_df)
-    
-    csv = turni_df.to_csv().encode('utf-8')
-    st.download_button("📥 Scarica Excel (CSV)", data=csv, file_name=f"turni_{mese}_{anno}.csv")
+    st.write("### Tabella Risultante")
+    st.dataframe(res_df)
+
+    # Conteggi di controllo in fondo
+    st.write("### Verifica Copertura (Deve essere 2-2-1)")
+    controlli = pd.DataFrame({
+        "Mattina (M)": [res_df[c].tolist().count("M") for c in giorni_cols],
+        "Pomeriggio (P)": [res_df[c].tolist().count("P") for c in giorni_cols],
+        "Notte (N)": [res_df[c].tolist().count("N") for c in giorni_cols]
+    }, index=giorni_cols).T
+    st.dataframe(controlli)
+
+    st.download_button("📥 Scarica Turni", res_df.to_csv().encode('utf-8'), "turni.csv")
