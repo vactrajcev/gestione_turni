@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
 import calendar
+from io import BytesIO
 
 # --- CONFIGURAZIONE E TITOLO ---
-st.set_page_config(page_title="Backup Turni Funzionante", layout="wide")
-st.title("🗓️ Generatore Turni - Versione Stabile (Backup)")
+st.set_page_config(page_title="Backup Turni + Excel", layout="wide")
+st.title("🗓️ Generatore Turni - Versione Stabile con Export Excel")
 
 # --- COSTANTI ---
 VINCOLI_LISTA = ["No Weekend", "Solo Notti", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio", "No Notte"]
@@ -32,26 +33,33 @@ edited_df = st.data_editor(
         "vincoli": st.column_config.MultiselectColumn("Vincoli", options=VINCOLI_LISTA, width="medium"),
         "ore": st.column_config.NumberColumn("Ore Settimanali", min_value=0)
     },
-    key="editor_backup_stabile"
+    key="editor_excel_v1"
 )
 
 # --- LOGICA DI CONTROLLO ---
 def puo_lavorare(riga_op, tipo_turno, is_weekend, ore_sett_attuali, durata_turno):
     v = [str(i).lower().strip() for i in riga_op.get('vincoli', [])] if isinstance(riga_op.get('vincoli'), list) else []
     limite = riga_op.get('ore', 0)
-    
     if ore_sett_attuali + durata_turno > limite: return False
     if is_weekend and "no weekend" in v: return False
     if "solo notti" in v and tipo_turno != "N": return False
     if "solo mattina" in v and tipo_turno != "M": return False
     if "solo pomeriggio" in v and tipo_turno != "P": return False
-    
-    if tipo_turno == "N":
-        return "fa notti" in v or "solo notti" in v
-    
+    if tipo_turno == "N": return "fa notti" in v or "solo notti" in v
     if tipo_turno == "M" and "no mattina" in v: return False
     if tipo_turno == "P" and "no pomeriggio" in v: return False
     return True
+
+# --- FUNZIONE EXPORT EXCEL ---
+def to_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=True, sheet_name='Turni_Aprile_2026')
+        # Formattazione automatica larghezza colonne
+        worksheet = writer.sheets['Turni_Aprile_2026']
+        for idx, col in enumerate(df.columns):
+            worksheet.set_column(idx + 1, idx + 1, 12)
+    return output.getvalue()
 
 # --- MOTORE DI GENERAZIONE ---
 if st.button("🚀 GENERA TABELLA"):
@@ -73,23 +81,14 @@ if st.button("🚀 GENERA TABELLA"):
 
         for g_idx, col in enumerate(giorni_cols):
             wd = calendar.weekday(anno, mese, g_idx + 1)
-            if wd == 0: ore_sett_curr = {n: 0 for n in nomi} # Reset Lunedì
-            
+            if wd == 0: ore_sett_curr = {n: 0 for n in nomi}
             is_we = wd >= 5
             occupati_oggi = []
 
-            # Priorità Turni: Notte (9h), poi Mattina (7h), poi Pomeriggio (8h)
             for turno, ore_t in [("N", 9), ("M", 7), ("P", 8)]:
                 posti = 1 if turno == "N" else 2
-                candidati = [n for n in nomi if n not in occupati_oggi]
-                
-                # Applica vincoli e controllo ore
-                validi = [n for n in candidati if puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], turno, is_we, ore_sett_curr[n], ore_t)]
-                
-                # Protezione Smonto Notte
+                validi = [n for n in nomi if n not in occupati_oggi and puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], turno, is_we, ore_sett_curr[n], ore_t)]
                 validi = [v for v in validi if g_idx == 0 or res_df.at[v, giorni_cols[g_idx-1]] != "N"]
-                
-                # Bilanciamento: scegli chi ha lavorato meno nel mese
                 validi.sort(key=lambda x: ore_tot_mese[x])
                 
                 for s in validi[:posti]:
@@ -101,4 +100,16 @@ if st.button("🚀 GENERA TABELLA"):
 
         res_df["TOT ORE"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
         st.dataframe(res_df)
-        st.success("Backup salvato e tabella generata correttamente.")
+        
+        # Bottoni di Download
+        col1, col2 = st.columns(2)
+        with col1:
+            excel_data = to_excel(res_df)
+            st.download_button(
+                label="📥 Scarica in EXCEL",
+                data=excel_data,
+                file_name="turni_aprile_2026.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        with col2:
+            st.download_button("📄 Scarica in CSV", res_df.to_csv().encode('utf-8'), "turni.csv", "text/csv")
