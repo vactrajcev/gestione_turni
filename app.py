@@ -9,20 +9,26 @@ st.title("🗓️ Generatore Turni Professionale - Aprile 2026")
 # Lista Vincoli
 VINCOLI_LISTA = ["No Weekend", "Solo Notti", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio", "No Notte"]
 
+# Inizializzazione Dati con nomi puliti
 if 'operatori' not in st.session_state:
     st.session_state.operatori = [
-        {"nome": "NERI ELENA (38)", "ore": 38, "vincoli": ["No Pomeriggio", "Fa Notti", "No Weekend"]},
-        {"nome": "RISTOVA SIMONA (38)", "ore": 38, "vincoli": ["No Weekend", "Solo Mattina"]},
-        {"nome": "CAMMARATA M. (38)", "ore": 38, "vincoli": ["Fa Notti"]},
-        {"nome": "MISELMI H. (38)", "ore": 38, "vincoli": ["Fa Notti"]},
-        {"nome": "SAKLI BESMA (38)", "ore": 38, "vincoli": []}
+        {"nome": "NERI ELENA", "ore": 38, "vincoli": ["No Pomeriggio", "Fa Notti", "No Weekend"]},
+        {"nome": "RISTOVA SIMONA", "ore": 38, "vincoli": ["No Weekend", "Solo Mattina"]},
+        {"nome": "CAMMARATA M.", "ore": 38, "vincoli": ["Fa Notti"]},
+        {"nome": "MISELMI H.", "ore": 38, "vincoli": ["Fa Notti"]},
+        {"nome": "SAKLI BESMA", "ore": 38, "vincoli": []},
+        {"nome": "BERTOLETTI B.", "ore": 30, "vincoli": []},
+        {"nome": "PALMIERI J.", "ore": 25, "vincoli": []},
+        {"nome": "MOSTACCHI M.", "ore": 25, "vincoli": []}
     ]
 
 st.subheader("👥 Configurazione Operatori (Ore Settimanali)")
+# Tabella di input senza ore nel nome
 edited_df = st.data_editor(
     pd.DataFrame(st.session_state.operatori),
     num_rows="dynamic",
     column_config={
+        "nome": st.column_config.TextColumn("Nome Operatore"),
         "vincoli": st.column_config.MultiselectColumn("Vincoli", options=VINCOLI_LISTA),
         "ore": st.column_config.NumberColumn("Ore Settimanali", min_value=0)
     }
@@ -31,12 +37,12 @@ edited_df = st.data_editor(
 def puo_lavorare(riga_op, tipo_turno, is_weekend, ore_settimanali_attuali, durata_turno):
     v = [str(i).lower().strip() for i in riga_op.get('vincoli', [])] if isinstance(riga_op.get('vincoli'), list) else []
     
-    # --- CONTROLLO LIMITE SETTIMANALE ---
+    # Controllo limite settimanale
     limite_settimanale = riga_op.get('ore', 0)
     if ore_settimanali_attuali + durata_turno > limite_settimanale:
         return False
     
-    # --- CONTROLLO VINCOLI ---
+    # Controllo vincoli
     if is_weekend and "no weekend" in v: return False
     if "solo notti" in v and tipo_turno != "N": return False
     if "solo mattina" in v and tipo_turno != "M": return False
@@ -51,6 +57,7 @@ if st.button("🚀 GENERA TABELLA TURNI"):
     num_giorni = calendar.monthrange(anno, mese)[1]
     giorni_cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_giorni + 1)]
     
+    # Pulizia dati per evitare AttributeError
     df_clean = edited_df.copy()
     df_clean['ore'] = pd.to_numeric(df_clean['ore'], errors='coerce').fillna(0)
     op_validi = df_clean[(df_clean['nome'].notna()) & (df_clean['nome'] != "") & (df_clean['ore'] > 0)].copy()
@@ -61,7 +68,6 @@ if st.button("🚀 GENERA TABELLA TURNI"):
         nomi_op = op_validi['nome'].tolist()
         res_df = pd.DataFrame("-", index=nomi_op, columns=giorni_cols)
         
-        # Inizializziamo i contatori
         ore_totali_mese = {n: 0 for n in nomi_op}
         ore_settimana_corrente = {n: 0 for n in nomi_op}
 
@@ -69,7 +75,7 @@ if st.button("🚀 GENERA TABELLA TURNI"):
             giorno_del_mese = g_idx + 1
             wd_idx = calendar.weekday(anno, mese, giorno_del_mese)
             
-            # --- RESET SETTIMANALE: Se è Lunedì (0), azzera il conteggio settimanale ---
+            # Reset Lunedì (0)
             if wd_idx == 0:
                 ore_settimana_corrente = {n: 0 for n in nomi_op}
             
@@ -117,12 +123,8 @@ if st.button("🚀 GENERA TABELLA TURNI"):
                 ore_totali_mese[s] += 8
 
         res_df["ORE TOTALI MESE"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
-        st.write("### 📅 Tabella Turni con Reset Settimanale")
+        st.write("### 📅 Tabella Turni Generata")
         st.dataframe(res_df)
         
         st.write("### 📊 Riepilogo Ore Mensili")
-        st.info("Nota: Il limite inserito in tabella è SETTIMANALE. Il totale qui sotto è la somma del mese.")
-        st.table(pd.DataFrame({"Contratto Settimanale": op_validi.set_index('nome')['ore'], "Totale Lavorato Mese": res_df["ORE TOTALI MESE"]}))
-        
-        csv = res_df.to_csv().encode('utf-8')
-        st.download_button("📥 Scarica Turni", csv, "turni_aprile_settimanale.csv", "text/csv")
+        st.table(pd.DataFrame({"Contratto Sett.": op_validi.set_index('nome')['ore'], "Totale Mese": res_df["ORE TOTALI MESE"]}))
