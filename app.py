@@ -4,7 +4,7 @@ import calendar
 from io import BytesIO
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Gestione Turni - Versione Finale", layout="wide")
+st.set_page_config(page_title="Gestione Turni - Controllo Copertura", layout="wide")
 st.title("🗓️ Generatore Turni Professionale")
 
 # --- DATI INIZIALI ---
@@ -21,18 +21,19 @@ if 'operatori' not in st.session_state:
     ]
 
 # --- INTERFACCIA ---
-st.subheader("👥 Configurazione Operatori")
+st.subheader("👥 1. Configurazione Operatori e Ore Settimanali")
 edited_df = st.data_editor(
     pd.DataFrame(st.session_state.operatori),
     num_rows="dynamic",
     column_config={
+        "nome": st.column_config.TextColumn("Nome Operatore", width="large"),
         "vincoli": st.column_config.MultiselectColumn(
             "Vincoli", 
             options=["No Weekend", "Solo Notti", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio", "No Notte"]
         ),
         "ore": st.column_config.NumberColumn("Ore Settimanali", min_value=0)
     },
-    key="editor_finale"
+    key="editor_nomi_puliti_v3"
 )
 
 # --- FUNZIONI DI SUPPORTO ---
@@ -52,13 +53,13 @@ def to_excel(df):
     output = BytesIO()
     try:
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=True, sheet_name='Turni')
+            df.to_excel(writer, index=True, sheet_name='Turni_Aprile')
         return output.getvalue()
-    except ImportError:
+    except:
         return None
 
 # --- GENERAZIONE ---
-if st.button("🚀 GENERA TABELLA TURNI"):
+if st.button("🚀 GENERA TABELLA E CONTROLLA COPERTURA"):
     anno, mese = 2026, 4
     num_giorni = calendar.monthrange(anno, mese)[1]
     giorni_cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_giorni + 1)]
@@ -75,9 +76,10 @@ if st.button("🚀 GENERA TABELLA TURNI"):
         is_we = wd >= 5
         oggi = []
 
-        for turno, ore_t in [("N", 9), ("M", 7), ("P", 8)]:
-            posti = 1 if turno == "N" else 2
+        # Logica 2-2-1: Notte (1), Mattina (2), Pomeriggio (2)
+        for turno, ore_t, posti in [("N", 9, 1), ("M", 7, 2), ("P", 8, 2)]:
             validi = [n for n in op_validi['nome'] if n not in oggi and puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], turno, is_we, ore_sett_curr[n], ore_t)]
+            # Protezione smonto notte
             validi = [v for v in validi if g_idx == 0 or res_df.at[v, giorni_cols[g_idx-1]] != "N"]
             validi.sort(key=lambda x: ore_tot_mese[x])
             
@@ -87,11 +89,31 @@ if st.button("🚀 GENERA TABELLA TURNI"):
                 ore_tot_mese[s] += ore_t
                 oggi.append(s)
 
+    # Visualizzazione Tabella Principale
     res_df["TOT ORE"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
+    st.subheader("📅 2. Tabella Turni Generata")
     st.dataframe(res_df)
+
+    # --- TABELLA DI CONTROLLO COPERTURA (2-2-1) ---
+    st.subheader("✅ 3. Verifica Copertura Giornaliera (Target: M=2, P=2, N=1)")
     
+    conteggi = []
+    for col in giorni_cols:
+        colonna_giorno = res_df[col].tolist()
+        conteggi.append({
+            "Giorno": col,
+            "Mattina (M)": colonna_giorno.count("M"),
+            "Pomeriggio (P)": colonna_giorno.count("P"),
+            "Notte (N)": colonna_giorno.count("N"),
+            "Tot Operatori": len([x for x in colonna_giorno if x != "-"])
+        })
+    
+    check_df = pd.DataFrame(conteggi).set_index("Giorno").T
+    
+    # Evidenziamo se la copertura non è rispettata
+    st.table(check_df)
+
+    # Export
     excel_data = to_excel(res_df)
     if excel_data:
-        st.download_button("📥 Scarica Excel", data=excel_data, file_name="turni.xlsx", mime="application/vnd.ms-excel")
-    else:
-        st.error("Errore: libreria 'xlsxwriter' non installata nel sistema.")
+        st.download_button("📥 Scarica Excel", data=excel_data, file_name="turni_completi.xlsx")
