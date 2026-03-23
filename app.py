@@ -5,9 +5,9 @@ from io import BytesIO
 from datetime import datetime
 
 # Configurazione Pagina
-st.set_page_config(page_title="Gestione Turni V46", layout="wide")
-st.title("🗓️ Sistema Gestione Turni - V46")
-st.markdown("### 🌙 Ciclo: Notte-Notte-Smonto-Riposo")
+st.set_page_config(page_title="Gestione Turni V47", layout="wide")
+st.title("🗓️ Sistema Gestione Turni - V47")
+st.markdown("### 🌙 Ciclo Notte-Notte-Smonto-Riposo (Visualizzazione Pulita)")
 
 # --- FUNZIONE EXCEL ---
 def to_excel(df, analisi_df):
@@ -42,7 +42,7 @@ if 'operatori' not in st.session_state:
 col_op, col_inc = st.columns([1.5, 1])
 with col_op:
     st.subheader("👥 Operatori")
-    op_df = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic", key="op_v46",
+    op_df = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic", key="op_v47",
                            column_config={
                                "fa_notti": st.column_config.CheckboxColumn("Notti?"),
                                "max_notti": st.column_config.NumberColumn("Max N"),
@@ -52,18 +52,18 @@ with col_op:
 
 with col_inc:
     st.subheader("🤝 Incompatibilità")
-    inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_v46",
+    inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_v47",
                             column_config={"Op A": st.column_config.SelectboxColumn("Op A", options=lista_nomi),
                                            "Op B": st.column_config.SelectboxColumn("Op B", options=lista_nomi)})
 
 col_ass, col_pref = st.columns(2)
 with col_ass:
     st.subheader("🚫 Assenze")
-    ass_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Dal", "Al"]), num_rows="dynamic", key="ass_v46",
+    ass_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Dal", "Al"]), num_rows="dynamic", key="ass_v47",
                             column_config={"Operatore": st.column_config.SelectboxColumn("Op", options=lista_nomi)})
 with col_pref:
     st.subheader("⭐ Preferenze")
-    pref_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Giorno", "Turno"]), num_rows="dynamic", key="pref_v46",
+    pref_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Giorno", "Turno"]), num_rows="dynamic", key="pref_v47",
                              column_config={"Operatore": st.column_config.SelectboxColumn("Op", options=lista_nomi),
                                             "Turno": st.column_config.SelectboxColumn("T", options=["M", "P", "N"])})
 
@@ -83,7 +83,7 @@ def get_vietati(nome, df_ass):
     return v
 
 # --- GENERAZIONE ---
-def genera_v46(anno, mese):
+def genera_v47(anno, mese):
     num_g = calendar.monthrange(anno, mese)[1]
     cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_g + 1)]
     nomi = op_df['nome'].tolist()
@@ -92,8 +92,6 @@ def genera_v46(anno, mese):
     ore, notti = {n: 0 for n in nomi}, {n: 0 for n in nomi}
     targ = {n: r['ore']*4 for n, r in op_df.set_index('nome').iterrows()}
     lim_n = {n: r['max_notti'] for n, r in op_df.set_index('nome').iterrows()}
-    
-    # Stato: 0=Libero, 1=Fatta 1^ Notte, 2=Fatta 2^ Notte (Smonto), 3=Fatto Smonto (Riposo)
     stato_ciclo = {n: 0 for n in nomi}
 
     for g_idx, col in enumerate(cols):
@@ -101,21 +99,20 @@ def genera_v46(anno, mese):
         is_we = calendar.weekday(anno, mese, g) >= 5
         occ_oggi = []
 
-        # 1. GESTIONE CICLO NOTTI (Priorità Massima)
+        # 1. GESTIONE CICLO NOTTI (S e R nascosti)
         for n in nomi:
-            if stato_ciclo[n] == 1: # Deve fare la SECONDA NOTTE
+            if stato_ciclo[n] == 1: # SECONDA NOTTE
                 res.at[n, col] = "N"
-                occ_oggi.append(n)
-                ore[n] += 9; notti[n] += 1
+                occ_oggi.append(n); ore[n] += 9; notti[n] += 1
                 stato_ciclo[n] = 2
-            elif stato_ciclo[n] == 2: # Deve fare lo SMONTO
-                res.at[n, col] = "S"
+            elif stato_ciclo[n] == 2: # SMONTO (Cella Vuota ma occupato)
+                res.at[n, col] = " " 
                 occ_oggi.append(n)
                 stato_ciclo[n] = 3
-            elif stato_ciclo[n] == 3: # Deve fare il RIPOSO
-                res.at[n, col] = "R"
+            elif stato_ciclo[n] == 3: # RIPOSO (Cella Vuota ma occupato)
+                res.at[n, col] = " "
                 occ_oggi.append(n)
-                stato_ciclo[n] = 0 # Ciclo finito, torna libero
+                stato_ciclo[n] = 0
 
         # 2. Preferenze
         for _, p in pref_df[pref_df['Giorno'] == g].iterrows():
@@ -125,20 +122,18 @@ def genera_v46(anno, mese):
                 ore[n] += (9 if t=="N" else 7 if t=="M" else 8)
                 if t == "N": 
                     notti[n] += 1
-                    stato_ciclo[n] = 1 # Inizia ciclo
+                    stato_ciclo[n] = 1
 
-        # 3. Auto (N, M, P)
+        # 3. Auto
         for t_tipo, o_val, qta in [("N", 9, 1), ("M", 7, 2), ("P", 8, 2)]:
             while res[col].tolist().count(t_tipo) < qta:
                 cand = [n for n in nomi if n not in occ_oggi and g not in get_vietati(n, ass_df) and check_inc(n, occ_oggi, inc_df)]
-                
                 cand_filtrati = []
                 for n in cand:
                     vinc = op_df.loc[op_df['nome']==n, 'vincoli'].values[0]
                     vinc = [v.lower() for v in vinc] if isinstance(vinc, list) else []
                     ok = True
                     if t_tipo == "N":
-                        # Controllo se può iniziare un ciclo di 2 notti (serve spazio per 4 giorni)
                         if not op_df.loc[op_df['nome']==n, 'fa_notti'].values[0] or (notti[n] + 1) >= lim_n[n]: ok = False
                     if is_we and "no weekend" in vinc: ok = False
                     if t_tipo == "M" and ("solo pomeriggio" in vinc or "no mattina" in vinc): ok = False
@@ -155,16 +150,18 @@ def genera_v46(anno, mese):
     return res, ore, targ, notti
 
 # --- OUTPUT ---
-if st.button("🚀 GENERA PIANO V46"):
-    ris, ore_f, tar_f, not_f = genera_v46(anno_scelto, mese_scelto_num)
+if st.button("🚀 GENERA PIANO V47"):
+    ris, ore_f, tar_f, not_f = genera_v47(anno_scelto, mese_scelto_num)
     st.subheader("📅 Tabellone Turni")
     st.dataframe(ris, use_container_width=True)
-    st.subheader("✅ Verifica Copertura (2-2-1)")
-    cop = []
-    for c in ris.columns:
-        cop.append({"G": c, "M": ris[c].tolist().count("M"), "P": ris[c].tolist().count("P"), "N": ris[c].tolist().count("N")})
-    st.table(pd.DataFrame(cop).set_index("G").T)
-    st.subheader("📊 Analisi")
-    an = pd.DataFrame({"Notti": [not_f[n] for n in ris.index], "Sat%": [round((ore_f[n]/tar_f[n]*100) if tar_f[n]>0 else 0, 1) for n in ris.index]}, index=ris.index)
+    
+    st.subheader("📊 Analisi Equità e Carico Orario")
+    an = pd.DataFrame({
+        "Notti Fatte": [not_f[n] for n in ris.index],
+        "Ore Effettive": [ore_f[n] for n in ris.index],
+        "Ore Target": [tar_f[n] for n in ris.index],
+        "Saturazione %": [round((ore_f[n]/tar_f[n]*100) if tar_f[n]>0 else 0, 1) for n in ris.index]
+    }, index=ris.index)
     st.table(an)
-    st.download_button("📥 Excel", data=to_excel(ris, an), file_name="Turni_V46.xlsx")
+    
+    st.download_button("📥 Excel", data=to_excel(ris, an), file_name="Turni_V47.xlsx")
