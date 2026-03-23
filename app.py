@@ -9,9 +9,9 @@ st.title("🗓️ Generatore Turni Professionale - Aprile 2026")
 # Lista Vincoli per la Tendina
 VINCOLI_LISTA = ["No Weekend", "Solo Notti", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio", "No Notte"]
 
-# 1. Inizializzazione Dati con NOMI PULITI (Senza parentesi)
-if 'operatori' not in st.session_state:
-    st.session_state.operatori = [
+# 1. Inizializzazione Dati con NOMI PULITI (Senza parentesi e senza numeri)
+if 'operatori_puliti' not in st.session_state:
+    st.session_state.operatori_puliti = [
         {"nome": "NERI ELENA", "ore": 38, "vincoli": ["No Pomeriggio", "Fa Notti", "No Weekend"]},
         {"nome": "RISTOVA SIMONA", "ore": 38, "vincoli": ["No Weekend", "Solo Mattina"]},
         {"nome": "CAMMARATA M.", "ore": 38, "vincoli": ["Fa Notti"]},
@@ -24,16 +24,16 @@ if 'operatori' not in st.session_state:
 
 st.subheader("👥 Configurazione Operatori (Ore Settimanali)")
 
-# 2. Tabella di input corretta
+# 2. Tabella di input - Ho cambiato la KEY per forzare il refresh dei nomi
 edited_df = st.data_editor(
-    pd.DataFrame(st.session_state.operatori),
+    pd.DataFrame(st.session_state.operatori_puliti),
     num_rows="dynamic",
     column_config={
         "nome": st.column_config.TextColumn("Nome Operatore", width="large"),
         "vincoli": st.column_config.MultiselectColumn("Vincoli", options=VINCOLI_LISTA, width="medium"),
         "ore": st.column_config.NumberColumn("Ore Settimanali", min_value=0)
     },
-    key="editor_nomi_puliti"
+    key="editor_nomi_finali_v2" 
 )
 
 def puo_lavorare(riga_op, tipo_turno, is_weekend, ore_settimanali_attuali, durata_turno):
@@ -57,6 +57,7 @@ if st.button("🚀 GENERA TABELLA TURNI"):
     giorni_cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_giorni + 1)]
     
     df_clean = edited_df.copy()
+    # Conversione sicura delle ore per evitare AttributeError
     df_clean['ore'] = pd.to_numeric(df_clean['ore'], errors='coerce').fillna(0)
     op_validi = df_clean[(df_clean['nome'].notna()) & (df_clean['nome'] != "")].copy()
     
@@ -70,7 +71,7 @@ if st.button("🚀 GENERA TABELLA TURNI"):
 
         for g_idx, col in enumerate(giorni_cols):
             wd_idx = calendar.weekday(anno, mese, g_idx + 1)
-            if wd_idx == 0: ore_sett_curr = {n: 0 for n in nomi_op} # Reset Lunedì
+            if wd_idx == 0: ore_sett_curr = {n: 0 for n in nomi_op} # Reset ogni Lunedì
             
             is_we = wd_idx >= 5
             oggi = []
@@ -81,9 +82,9 @@ if st.button("🚀 GENERA TABELLA TURNI"):
                 candidati = [n for n in nomi_op if n not in oggi]
                 validi = [n for n in candidati if puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], turno, is_we, ore_sett_curr[n], ore_t)]
                 
-                # Evita smonto notte
+                # Evita smonto notte (non lavora il giorno dopo la notte)
                 validi = [v for v in validi if g_idx == 0 or res_df.at[v, giorni_cols[g_idx-1]] != "N"]
-                validi.sort(key=lambda x: ore_tot_mese[x])
+                validi.sort(key=lambda x: ore_tot_mese[x]) # Bilancia chi ha lavorato meno
                 
                 for s in validi[:posti]:
                     if res_df.at[s, col] == "-":
@@ -94,4 +95,4 @@ if st.button("🚀 GENERA TABELLA TURNI"):
 
         res_df["TOT MESE"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
         st.dataframe(res_df)
-        st.success("Tabella generata con successo!")
+        st.success("Tabella generata con nomi puliti e limiti settimanali!")
