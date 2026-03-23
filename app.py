@@ -5,7 +5,7 @@ from io import BytesIO
 
 # --- CONFIGURAZIONE ---
 st.set_page_config(page_title="Gestione Turni Intelligence", layout="wide")
-st.title("🗓️ Generatore Turni con Copertura Forzata")
+st.title("🗓️ Generatore Turni con Riepilogo Ore")
 
 if 'operatori' not in st.session_state:
     st.session_state.operatori = [
@@ -27,33 +27,37 @@ edited_df = st.data_editor(
         "vincoli": st.column_config.MultiselectColumn("Vincoli", options=["No Weekend", "Solo Notti", "Solo Mattina", "Solo Pomeriggio", "Fa Notti", "No Mattina", "No Pomeriggio", "No Notte"]),
         "ore": st.column_config.NumberColumn("Ore Settimanali")
     },
-    key="editor_v4"
+    key="editor_v5"
 )
 
 def valutazione_operatore(riga_op, tipo_turno, is_weekend, ore_sett_attuali, durata_turno, g_idx, res_df, giorni_cols):
     v = [str(i).lower().strip() for i in riga_op.get('vincoli', [])] if isinstance(riga_op.get('vincoli'), list) else []
     
-    # Vincoli Blooccanti (Questi non si possono violare)
-    if is_weekend and "no weekend" in v: return -1 # Impossibile
+    if is_weekend and "no weekend" in v: return -1
     if "solo notti" in v and tipo_turno != "N": return -1
     if "solo mattina" in v and tipo_turno != "M": return -1
     if "solo pomeriggio" in v and tipo_turno != "P": return -1
     if tipo_turno == "N" and not ("fa notti" in v or "solo notti" in v): return -1
     if tipo_turno == "M" and "no mattina" in v: return -1
     if tipo_turno == "P" and "no pomeriggio" in v: return -1
-    
-    # Protezione Smonto Notte (Bloccante)
     if g_idx > 0 and res_df.at[riga_op['nome'], giorni_cols[g_idx-1]] == "N": return -1
 
-    # Calcolo punteggio idoneità (Più basso è, meglio è)
     punteggio = ore_sett_attuali
-    # Penalità pesante se supera le ore, ma non bloccante se l'alternativa è il buco
     if ore_sett_attuali + durata_turno > riga_op.get('ore', 0):
         punteggio += 1000 
     
     return punteggio
 
-if st.button("🚀 GENERA E FORZA COPERTURA 2-2-1"):
+def to_excel(df):
+    output = BytesIO()
+    try:
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=True, sheet_name='Turni')
+        return output.getvalue()
+    except:
+        return None
+
+if st.button("🚀 GENERA E MOSTRA ORE TOTALI"):
     anno, mese = 2026, 4
     num_giorni = calendar.monthrange(anno, mese)[1]
     giorni_cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_giorni + 1)]
@@ -77,22 +81,38 @@ if st.button("🚀 GENERA E FORZA COPERTURA 2-2-1"):
                     if score != -1:
                         candidati.append((op['nome'], score))
             
-            # Ordina per chi ha meno ore (o chi non ha ancora sforato)
             candidati.sort(key=lambda x: x[1])
-            
             for s, _ in candidati[:posti]:
                 res_df.at[s, col] = turno
                 ore_sett_curr[s] += ore_t
                 ore_tot_mese[s] += ore_t
                 oggi.append(s)
 
-    # Visualizzazione
+    # --- AGGIUNTA COLONNA ORE TOTALI ---
+    res_df["ORE TOTALI"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
+    
+    st.subheader("📅 2. Tabella Turni con Riepilogo Ore")
     st.dataframe(res_df)
     
-    # Tabella Controllo
+    # --- TABELLA DI CONFRONTO ORE ---
+    st.subheader("📊 3. Analisi Ore: Contratto vs Effettive")
+    analisi_ore = pd.DataFrame({
+        "Contratto Settimanale": op_validi.set_index('nome')['ore'],
+        "Ore Totali Mese (Effettive)": res_df["ORE TOTALI"]
+    })
+    # Calcolo indicativo ore mensili medie (Settimanale * 4)
+    analisi_ore["Target Mensile (circa)"] = analisi_ore["Contratto Settimanale"] * 4
+    st.table(analisi_ore)
+
+    # --- VERIFICA COPERTURA ---
+    st.subheader("✅ 4. Verifica Copertura Giornaliera (2-2-1)")
     conteggi = []
     for col in giorni_cols:
         c = res_df[col].tolist()
         conteggi.append({"Giorno": col, "M": c.count("M"), "P": c.count("P"), "N": c.count("N")})
-    st.write("### 📊 Verifica Copertura (Target 2-2-1)")
     st.table(pd.DataFrame(conteggi).set_index("Giorno").T)
+
+    # Export
+    excel_data = to_excel(res_df)
+    if excel_data:
+        st.download_button("📥 Scarica Excel", data=excel_data, file_name="turni_con_riepilogo.xlsx")
