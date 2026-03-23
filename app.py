@@ -110,4 +110,4 @@ if st.button("🚀 GENERA TURNI BILANCIATI"):
     st.write("### 📅 Tabella Turni (Solo personale attivo)")
     st.dataframe(res_df)
 
-    st.download_button("📥 Scarica Turni", res_df.to_csv
+    st.download_button("📥 Scarica Turni", res_df.to_csv().encode('utf-8'), "turni_aprile_filtrati.csv")
