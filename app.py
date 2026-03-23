@@ -3,7 +3,7 @@ import pandas as pd
 import calendar
 
 # Configurazione Pagina
-st.set_page_config(page_title="Gestione Turni Avanzata", layout="wide")
+st.set_page_config(page_title="Gestione Turni con Limite Ore", layout="wide")
 st.title("🗓️ Generatore Turni Professionale - Aprile 2026")
 
 # Lista Vincoli per la Tendina
@@ -19,18 +19,25 @@ if 'operatori' not in st.session_state:
         {"nome": "SAKLI BESMA (38)", "ore": 38, "vincoli": []}
     ]
 
-st.subheader("👥 Configurazione Personale e Vincoli")
+st.subheader("👥 Configurazione Personale e Limiti Orari")
 edited_df = st.data_editor(
     pd.DataFrame(st.session_state.operatori),
     num_rows="dynamic",
     column_config={
         "vincoli": st.column_config.MultiselectColumn("Vincoli", options=VINCOLI_LISTA),
-        "ore": st.column_config.NumberColumn("Ore", min_value=0)
+        "ore": st.column_config.NumberColumn("Ore Contrattuali", min_value=0, help="Limite massimo di ore mensili")
     }
 )
 
-def puo_lavorare(riga_op, tipo_turno, is_weekend):
+def puo_lavorare(riga_op, tipo_turno, is_weekend, ore_attuali, durata_turno):
     v = [str(i).lower().strip() for i in riga_op.get('vincoli', [])] if isinstance(riga_op.get('vincoli'), list) else []
+    
+    # --- NUOVO CONTROLLO ORE ---
+    limite_ore = riga_op.get('ore', 0)
+    if ore_attuali + durata_turno > limite_ore:
+        return False
+    
+    # --- CONTROLLO VINCOLI ---
     if is_weekend and "no weekend" in v: return False
     if "solo notti" in v and tipo_turno != "N": return False
     if "solo mattina" in v and tipo_turno != "M": return False
@@ -60,10 +67,9 @@ if st.button("🚀 GENERA TABELLA TURNI"):
             is_we = calendar.weekday(anno, mese, g_idx + 1) >= 5
             oggi = []
 
-            # 1. NOTTE (1)
-            cand_n = [r['nome'] for _, r in op_validi.iterrows() if puo_lavorare(r, "N", is_we)]
+            # 1. NOTTE (9h)
+            cand_n = [r['nome'] for _, r in op_validi.iterrows() if puo_lavorare(r, "N", is_we, ore_fatte[r['nome']], 9)]
             scelto_n = None
-            # Priorità a chi deve finire il raddoppio
             for d in cand_n:
                 if g_idx > 0 and res_df.at[d, giorni_cols[g_idx-1]] == "N":
                     if g_idx == 1 or res_df.at[d, giorni_cols[g_idx-2]] != "N": scelto_n = d
@@ -77,15 +83,17 @@ if st.button("🚀 GENERA TABELLA TURNI"):
             if scelto_n:
                 res_df.at[scelto_n, col] = "N"; ore_fatte[scelto_n] += 9; oggi.append(scelto_n)
 
-            # 2. MATTINA (2)
-            cand_m = [n for n in nomi_op if n not in oggi and puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], "M", is_we)]
+            # 2. MATTINA (7h)
+            cand_m = [n for n in nomi_op if n not in oggi]
+            cand_m = [n for n in cand_m if puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], "M", is_we, ore_fatte[n], 7)]
             cand_m = [d for d in cand_m if g_idx == 0 or res_df.at[d, giorni_cols[g_idx-1]] != "N"]
             cand_m.sort(key=lambda x: ore_fatte[x])
             for s in cand_m[:2]:
                 res_df.at[s, col] = "M"; ore_fatte[s] += 7; oggi.append(s)
 
-            # 3. POMERIGGIO (2)
-            cand_p = [n for n in nomi_op if n not in oggi and puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], "P", is_we)]
+            # 3. POMERIGGIO (8h)
+            cand_p = [n for n in nomi_op if n not in oggi]
+            cand_p = [n for n in cand_p if puo_lavorare(op_validi[op_validi['nome']==n].iloc[0], "P", is_we, ore_fatte[n], 8)]
             cand_p = [d for d in cand_p if g_idx == 0 or res_df.at[d, giorni_cols[g_idx-1]] != "N"]
             cand_p.sort(key=lambda x: ore_fatte[x])
             for s in cand_p[:2]:
@@ -93,5 +101,10 @@ if st.button("🚀 GENERA TABELLA TURNI"):
 
         res_df["ORE TOT"] = res_df.apply(lambda r: (r.tolist().count("M")*7 + r.tolist().count("P")*8 + r.tolist().count("N")*9), axis=1)
         st.dataframe(res_df)
+        
+        # Alert se qualcuno non arriva alle ore o se mancano coperture
+        st.write("### 📊 Riepilogo Ore")
+        st.table(pd.DataFrame({"Ore Contrattuali": op_validi.set_index('nome')['ore'], "Ore Assegnate": res_df["ORE TOT"]}))
+        
         csv = res_df.to_csv().encode('utf-8')
         st.download_button("📥 Scarica Turni", csv, "turni.csv", "text/csv")
