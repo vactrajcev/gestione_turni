@@ -21,6 +21,14 @@ if 'operatori' not in st.session_state:
 
 op_data = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic")
 
+def to_excel(df, analisi_df):
+    output = BytesIO()
+    # Utilizziamo xlsxwriter come motore per evitare errori di dipendenze comuni
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, sheet_name='Tabella Turni')
+        analisi_df.to_excel(writer, sheet_name='Analisi Equità')
+    return output.getvalue()
+    
 def genera_turni_equi():
     anno, mese = 2026, 4
     num_giorni = calendar.monthrange(anno, mese)[1]
@@ -110,3 +118,14 @@ if st.button("🚀 GENERA TURNI EQUI"):
     st.subheader("✅ Verifica Copertura 2-2-1")
     check = [{"Giorno": c, "M": risultato[c].tolist().count("M"), "P": risultato[c].tolist().count("P"), "N": risultato[c].tolist().count("N")} for c in risultato.columns]
     st.write(pd.DataFrame(check).set_index("Giorno").T)
+
+# Genera il file in memoria
+excel_file = to_excel(risultato, analisi)
+
+# Crea il pulsante per l'utente
+st.download_button(
+    label="📥 Scarica File Excel",
+    data=excel_file,
+    file_name="turni_equi_aprile.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
