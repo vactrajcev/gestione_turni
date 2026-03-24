@@ -5,9 +5,9 @@ from io import BytesIO
 from datetime import datetime
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V64.5 - Preference Fix", layout="wide")
-st.title("🗓️ Sistema Gestione Turni - V64.5")
-st.markdown("### 🛠️ Fix Preferenze: Rispetto rigoroso del Target 2-2-1")
+st.set_page_config(page_title="Gestione Turni V64.6 - Ultimate Fix", layout="wide")
+st.title("🗓️ Sistema Gestione Turni - V64.6")
+st.markdown("### 🛡️ Protezione Target 2-2-1 + Sincronizzazione Cicli/Preferenze")
 
 def to_excel(df, analisi_df):
     output = BytesIO()
@@ -33,7 +33,7 @@ if 'operatori' not in st.session_state:
 col_op, col_inc = st.columns([1.5, 1])
 with col_op:
     st.subheader("👥 Operatori e Vincoli")
-    op_df = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic", key="op_v64_5",
+    op_df = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic", key="op_v64_6",
                            column_config={
                                "vincoli": st.column_config.MultiselectColumn("Vincoli", options=["No Weekend", "Solo Mattina", "Solo Pomeriggio", "No Mattina", "No Pomeriggio"]),
                                "fa_notti": st.column_config.CheckboxColumn("Notti?")
@@ -42,7 +42,7 @@ with col_op:
 
 with col_inc:
     st.subheader("🤝 Incompatibilità")
-    inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_v64_5",
+    inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_v64_6",
                             column_config={
                                 "Op A": st.column_config.SelectboxColumn("Op A", options=lista_nomi),
                                 "Op B": st.column_config.SelectboxColumn("Op B", options=lista_nomi)
@@ -51,17 +51,17 @@ with col_inc:
 col_ass, col_pref = st.columns(2)
 with col_ass:
     st.subheader("🚫 Assenze")
-    ass_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Dal", "Al"]), num_rows="dynamic", key="ass_v64_5",
+    ass_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Dal", "Al"]), num_rows="dynamic", key="ass_v64_6",
                             column_config={"Operatore": st.column_config.SelectboxColumn("Op", options=lista_nomi)})
 with col_pref:
     st.subheader("⭐ Preferenze")
-    pref_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Giorno", "Turno"]), num_rows="dynamic", key="pref_v64_5",
+    pref_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Giorno", "Turno"]), num_rows="dynamic", key="pref_v64_6",
                              column_config={
                                  "Operatore": st.column_config.SelectboxColumn("Op", options=lista_nomi),
                                  "Turno": st.column_config.SelectboxColumn("T", options=["M", "P", "N"])
                              })
 
-# --- 3. MOTORE V64.5 ---
+# --- 3. MOTORE V64.6 ---
 def genera_piano(anno, mese):
     num_g = calendar.monthrange(anno, mese)[1]
     cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_g + 1)]
@@ -80,14 +80,7 @@ def genera_piano(anno, mese):
         is_we = wd >= 5
         occ_oggi = []
 
-        # A. NOTTE 2 (Sequenza automatica N-N-S-R)
-        for n in nomi:
-            if stato_ciclo[n] == 1:
-                res.at[n, col] = "N"; occ_oggi.append(n); notti_att[n]+=1; ore_att[n]+=9; stato_ciclo[n]=2
-            elif stato_ciclo[n] == 2: res.at[n, col] = " "; occ_oggi.append(n); stato_ciclo[n]=3
-            elif stato_ciclo[n] == 3: res.at[n, col] = " "; occ_oggi.append(n); stato_ciclo[n]=0
-
-        # B. PREFERENZE (FIX: Sottrazione posti dai target)
+        # A. PREFERENZE (Hanno priorità assoluta)
         pref_oggi = pref_df[pref_df['Giorno'].astype(str) == str(g)]
         for _, p in pref_oggi.iterrows():
             n, t = p['Operatore'], p['Turno']
@@ -95,26 +88,47 @@ def genera_piano(anno, mese):
                 res.at[n, col] = t
                 occ_oggi.append(n)
                 ore_att[n] += (9 if t=="N" else 7 if t=="M" else 8)
-                if t == "N": 
+                if t == "N":
                     notti_att[n]+=1
-                    stato_ciclo[n]=1
+                    stato_ciclo[n]=1 # Segna che ha iniziato la Notte 1
+
+        # B. CICLO NOTTI AUTOMATICO (Controlla se il posto N è già preso da una preferenza)
+        notte_occupata = (res[col] == "N").any()
+
+        for n in nomi:
+            if n in occ_oggi: continue # Salta chi ha già una preferenza
+            
+            if stato_ciclo[n] == 1: # Dovrebbe fare la Notte 2
+                if not notte_occupata:
+                    res.at[n, col] = "N"; occ_oggi.append(n); notti_att[n]+=1; ore_att[n]+=9; stato_ciclo[n]=2
+                    notte_occupata = True
+                else:
+                    # Posto già preso da preferenza: l'operatore va in riposo forzato per non sforare target
+                    res.at[n, col] = " "; occ_oggi.append(n); stato_ciclo[n]=3
+            elif stato_ciclo[n] == 2: # Smonto
+                res.at[n, col] = " "; occ_oggi.append(n); stato_ciclo[n]=3
+            elif stato_ciclo[n] == 3: # Riposo
+                res.at[n, col] = " "; occ_oggi.append(n); stato_ciclo[n]=0
 
         # C. ASSEGNAZIONE INTELLIGENTE (2M, 2P, 1N)
         for t_tipo, qta_target in [("N", 1), ("M", 2), ("P", 2)]:
-            # Calcola quanti posti sono stati già presi dalle preferenze o dal ciclo N-N
-            posti_occupati = res[col].tolist().count(t_tipo)
+            posti_attuali = res[col].tolist().count(t_tipo)
             
-            while posti_occupati < qta_target:
+            while posti_attuali < qta_target:
                 cand = [n for n in nomi if n not in occ_oggi]
                 cand_f = []
                 for n in cand:
                     v = vinc_map.get(n, [])
                     ok = True
+                    # Assenze
                     if any(r['Operatore']==n and pd.notna(r['Dal']) and int(r['Dal'])<=g<=(int(r['Al']) if pd.notna(r['Al']) else int(r['Dal'])) for _, r in ass_df.iterrows()): ok = False
+                    # Regole Notti
                     if t_tipo == "N" and (not puo_n[n] or notti_att[n] >= lim_n[n]): ok = False
+                    # Vincoli Orari
                     if is_we and "no weekend" in v: ok = False
                     if t_tipo == "M" and ("solo pomeriggio" in v or "no mattina" in v): ok = False
                     if t_tipo == "P" and ("solo mattina" in v or "no pomeriggio" in v): ok = False
+                    # Incompatibilità
                     for o in occ_oggi:
                         if res.at[o, col] == t_tipo:
                             if not inc_df[((inc_df['Op A']==n) & (inc_df['Op B']==o)) | ((inc_df['Op A']==o) & (inc_df['Op B']==n))].empty: ok = False
@@ -139,9 +153,9 @@ def genera_piano(anno, mese):
                 res.at[scelto, col] = t_tipo
                 occ_oggi.append(scelto)
                 ore_att[scelto] += (9 if t_tipo=="N" else 7 if t_tipo=="M" else 8)
-                posti_occupati += 1
+                posti_attuali += 1
 
-    # Analisi Finale con Totale Squadra
+    # Analisi Squadra
     an_rows = []
     for n in nomi:
         r = res.loc[n].tolist()
@@ -160,7 +174,7 @@ mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", 
 m_n = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA PIANO V64.5"):
+if st.button("🚀 GENERA PIANO V64.6"):
     tab, an = genera_piano(anno, mesi.index(m_n) + 1)
     st.subheader("📅 Tabellone Turni")
     st.dataframe(tab, use_container_width=True)
@@ -171,11 +185,10 @@ if st.button("🚀 GENERA PIANO V64.5"):
         m, p, n = tab[c].tolist().count("M"), tab[c].tolist().count("P"), tab[c].tolist().count("N")
         ore_tot = (m*7) + (p*8) + (n*9)
         check_list.append({"Giorno": c, "M": m, "P": p, "N": n, "Ore": ore_tot})
-    
     check_df = pd.DataFrame(check_list).set_index("Giorno").T
     check_df["TOTALE MESE"] = check_df.sum(axis=1)
     st.table(check_df)
     
     st.subheader("📊 Analisi Squadra")
     st.table(an)
-    st.download_button("📥 Scarica Excel", data=to_excel(tab, an), file_name=f"Turni_V64_5.xlsx")
+    st.download_button("📥 Scarica Excel", data=to_excel(tab, an), file_name=f"Turni_V64_6.xlsx")
