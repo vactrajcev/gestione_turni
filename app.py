@@ -174,7 +174,7 @@ mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", 
 m_n = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA PIANO V64.6"):
+if st.button("🚀 GENERA PIANO "):
     tab, an = genera_piano(anno, mesi.index(m_n) + 1)
     st.subheader("📅 Tabellone Turni")
     st.dataframe(tab, use_container_width=True)
