@@ -7,7 +7,7 @@ from io import BytesIO
 from datetime import datetime
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V67.2 - Regole 66.9 Ripristinate", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Gestione Turni V67.3 - No Buchi", layout="wide", page_icon="⚖️")
 
 DB_FILE = "database_turni_v66.json"
 
@@ -34,7 +34,7 @@ def to_excel(tab, an_df, cop_df, gett_df):
 if 'operatori' not in st.session_state:
     st.session_state.operatori = carica_dati() or []
 
-st.title("⚖️ Sistema Turni V67.2 - Integrazione Totale")
+st.title("⚖️ Sistema Turni V67.3 - Copertura Garantita")
 
 # --- 1. CONFIGURAZIONE SQUADRA FISSA ---
 with st.expander("⚙️ 1. Personale Fisso & Incompatibilità"):
@@ -48,13 +48,13 @@ with st.expander("⚙️ 1. Personale Fisso & Incompatibilità"):
         salva_dati(st.session_state.operatori)
         st.success("Database Fissi Aggiornato!")
 
-    st.subheader("🤝 Coppie Incompatibili (Mai insieme)")
+    st.subheader("🤝 Coppie Incompatibili")
     inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_ed",
-                             column_config={"Op A": st.column_config.SelectboxColumn("Operatore 1", options=lista_nomi),
-                                            "Op B": st.column_config.SelectboxColumn("Operatore 2", options=lista_nomi)})
+                             column_config={"Op A": st.column_config.SelectboxColumn("Op 1", options=lista_nomi),
+                                            "Op B": st.column_config.SelectboxColumn("Op 2", options=lista_nomi)})
 
 # --- 2. GETTONISTI ---
-with st.expander("🃏 2. Disponibilità Gettonisti (Esterni)"):
+with st.expander("🃏 2. Disponibilità Gettonisti"):
     gett_input_df = st.data_editor(
         pd.DataFrame(columns=["Nome Gettonista", "Giorno", "Preferenza Turno"]), 
         num_rows="dynamic",
@@ -77,7 +77,7 @@ with col_pref:
                              column_config={"Operatore": st.column_config.SelectboxColumn("Op", options=lista_nomi),
                                             "Turno": st.column_config.SelectboxColumn("T", options=["M", "P", "N"])})
 
-# --- MOTORE DI CALCOLO V67.2 ---
+# --- MOTORE DI CALCOLO V67.3 ---
 def genera_piano(anno, mese):
     num_g = calendar.monthrange(anno, mese)[1]
     cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_g + 1)]
@@ -90,8 +90,10 @@ def genera_piano(anno, mese):
     ore_att, notti_att, stato_c, cons = {n: 0 for n in nomi_fissi}, {n: 0 for n in nomi_fissi}, {n: 0 for n in nomi_fissi}, {n: 0 for n in nomi_fissi}
     
     weekend_list = []
-    for g in range(1, num_g):
-        if calendar.weekday(anno, mese, g) == 5: weekend_list.append((g, g+1))
+    for g in range(1, num_g + 1):
+        if calendar.weekday(anno, mese, g) == 5:
+            if g + 1 <= num_g: weekend_list.append((g, g+1))
+    
     we_protetto = {n: (weekend_list[i % len(weekend_list)] if weekend_list else -1) for i, n in enumerate(nomi_fissi)}
 
     for g in range(1, num_g + 1):
@@ -99,20 +101,7 @@ def genera_piano(anno, mese):
         col_prev = cols[g-2] if g > 1 else None
         is_we, occ_oggi = wd >= 5, []
 
-        # 1. Regola NoWeekend + Solo Mattina (Lun-Ven)
-        if not is_we:
-            for n in nomi_fissi:
-                v = vinc_m.get(n, [])
-                if "no weekend" in v and "solo mattina" in v:
-                    if not any(r['Operatore']==n and pd.notna(r['Dal']) and int(r['Dal'])<=g<=(int(r['Al']) if pd.notna(r['Al']) else int(r['Dal'])) for _, r in ass_df.iterrows()):
-                        res.at[n, col] = "M"; occ_oggi.append(n); ore_att[n] += 7; cons[n] += 1
-
-        # 2. Riposo 6 giorni fissi
-        for n in nomi_fissi:
-            if cons[n] >= 6 and n not in occ_oggi:
-                res.at[n, col] = " "; occ_oggi.append(n); cons[n] = 0
-
-        # 3. Preferenze fissi
+        # 1. Preferenze e Assenze (Priorità assoluta)
         p_oggi = pref_df[pref_df['Giorno'].astype(str) == str(g)]
         for _, p in p_oggi.iterrows():
             n, t = p['Operatore'], p['Turno']
@@ -120,21 +109,19 @@ def genera_piano(anno, mese):
                 res.at[n, col] = t; occ_oggi.append(n); ore_att[n] += (9 if t=="N" else 7 if t=="M" else 8); cons[n] += 1
                 if t == "N": notti_att[n]+=1; stato_c[n]=1
 
-        # 4. Ciclo Notte Fissi
+        # 2. Ciclo Notte Fissi
         n_assegnata = (res[col] == "N").any()
         for n in nomi_fissi:
             if n in occ_oggi: continue
-            if stato_c[n] == 1:
-                if not n_assegnata and info_m[n]['fa_notti'] and notti_att[n] < info_m[n]['max_notti']:
-                    res.at[n, col] = "N"; occ_oggi.append(n); ore_att[n]+=9; notti_att[n]+=1; stato_c[n]=2; cons[n]+=1; n_assegnata=True
-                else: res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=3; cons[n]=0
-            elif stato_c[n] == 2: res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=3; cons[n]=0
-            elif stato_c[n] == 3: res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=0; cons[n]=0
+            if stato_c[n] == 1: # Smonto
+                res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=2; cons[n]=0
+            elif stato_c[n] == 2: # Riposo post-notte
+                res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=0; cons[n]=0
 
-        # 5. Riempimento 2-2-1
+        # 3. Riempimento 2-2-1 con Gerarchia di Emergenza
         for t_tipo, qta in [("N", 1), ("M", 2), ("P", 2)]:
             while res[col].tolist().count(t_tipo) < qta:
-                # A. Filtro Dipendenti (Inclusa Incompatibilità)
+                # LIVELLO A: Fissi liberi (No vincoli, No we_protetto)
                 cand = [n for n in nomi_fissi if n not in occ_oggi]
                 cand_f = []
                 for n in cand:
@@ -143,32 +130,46 @@ def genera_piano(anno, mese):
                     if t_tipo == "M" and col_prev and res.at[n, col_prev] == "P": ok = False
                     if any(r['Operatore']==n and pd.notna(r['Dal']) and int(r['Dal'])<=g<=(int(r['Al']) if pd.notna(r['Al']) else int(r['Dal'])) for _, r in ass_df.iterrows()): ok = False
                     if is_we and "no weekend" in v: ok = False
-                    # Controllo Incompatibilità
+                    if t_tipo == "M" and ("solo pomeriggio" in v or "no mattina" in v): ok = False
+                    if t_tipo == "P" and ("solo mattina" in v or "no pomeriggio" in v): ok = False
                     for gia_in in occ_oggi:
                         if not inc_df[((inc_df['Op A']==n) & (inc_df['Op B']==gia_in)) | ((inc_df['Op A']==gia_in) & (inc_df['Op B']==n))].empty: ok = False
                     if ok: cand_f.append(n)
                 
                 if cand_f:
-                    scelto = min(cand_f, key=lambda x: (notti_att[x] if t_tipo=="N" else ore_att[x]/(info_m[x]['ore']*4) if info_m[x]['ore']>0 else 1))
+                    scelto = min(cand_f, key=lambda x: (notti_att[x] if t_tipo=="N" else ore_att[x]))
                     res.at[scelto, col] = t_tipo; occ_oggi.append(scelto)
                     ore_att[scelto] += (9 if t_tipo=="N" else 7 if t_tipo=="M" else 8); cons[scelto] += 1
                     if t_tipo == "N": notti_att[scelto]+=1; stato_c[scelto]=1
-                else:
-                    # B. Gettonisti
-                    get_disp = gett_input_df[(gett_input_df['Giorno'] == g) & ((gett_input_df['Preferenza Turno'] == t_tipo) | (gett_input_df['Preferenza Turno'] == "Qualsiasi"))]
-                    valido_get = None
-                    for _, r_g in get_disp.iterrows():
-                        gn = r_g['Nome Gettonista'] + " (GET)"
-                        if gn not in occ_oggi: valido_get = gn; break
-                    
-                    if valido_get:
-                        if valido_get not in res.index: res = pd.concat([res, pd.DataFrame("-", index=[valido_get], columns=res.columns)])
-                        res.at[valido_get, col] = t_tipo; occ_oggi.append(valido_get)
-                    else: break # Salto l'ultima spiaggia per brevità o la aggiungiamo se vuoi
+                    continue
 
-        for n in nomi_fissi:
-            if res.at[n, col] in ["-", " ", "R"]: cons[n] = 0
-            
+                # LIVELLO B: Gettonisti
+                get_disp = gett_input_df[(gett_input_df['Giorno'] == g) & ((gett_input_df['Preferenza Turno'] == t_tipo) | (gett_input_df['Preferenza Turno'] == "Qualsiasi"))]
+                valido_get = None
+                for _, r_g in get_disp.iterrows():
+                    gn = r_g['Nome Gettonista'] + " (GET)"
+                    if gn not in occ_oggi: valido_get = gn; break
+                
+                if valido_get:
+                    if valido_get not in res.index: res = pd.concat([res, pd.DataFrame("-", index=[valido_get], columns=res.columns)])
+                    res.at[valido_get, col] = t_tipo; occ_oggi.append(valido_get)
+                    continue
+
+                # LIVELLO C: Fissi (Ignorando weekend protetto ma non le assenze)
+                cand_emergenza = [n for n in nomi_fissi if n not in occ_oggi]
+                cand_e_f = []
+                for n in cand_emergenza:
+                    v, ok = vinc_m.get(n, []), True
+                    if any(r['Operatore']==n and pd.notna(r['Dal']) and int(r['Dal'])<=g<=(int(r['Al']) if pd.notna(r['Al']) else int(r['Dal'])) for _, r in ass_df.iterrows()): ok = False
+                    if is_we and "no weekend" in v: ok = False
+                    if ok: cand_e_f.append(n)
+                
+                if cand_e_f:
+                    scelto = min(cand_e_f, key=lambda x: ore_att[x])
+                    res.at[scelto, col] = t_tipo; occ_oggi.append(scelto)
+                    ore_att[scelto] += (9 if t_tipo=="N" else 7 if t_tipo=="M" else 8); cons[scelto] += 1
+                else: break 
+
     # Conteggio Weekend Liberi (Regola 66.9)
     we_liberi = {n: 0 for n in nomi_fissi}
     for n in nomi_fissi:
@@ -182,11 +183,10 @@ mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", 
 m_sel = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA REPORT V67.2"):
+if st.button("🚀 GENERA REPORT V67.3"):
     tab, ore_f, notti_f, info_f, we_f = genera_piano(anno, mesi.index(m_sel) + 1)
     st.dataframe(tab, use_container_width=True)
     
-    # Copertura Oraria con Totali
     st.subheader("✅ Tabella Copertura (2-2-1)")
     cop_list = []
     for c in tab.columns:
@@ -196,10 +196,9 @@ if st.button("🚀 GENERA REPORT V67.2"):
     cop_df["TOTALI"] = cop_df.sum(axis=1)
     st.table(cop_df)
     
-    # Analisi Fissi con Totali in fondo
     st.subheader("📊 Analisi Squadra Fissa")
     an_df = pd.DataFrame([{"Operatore": n, "Notti": notti_f[n], "WE Liberi": we_f[n], "Ore Eff.": ore_f[n], "Target": info_f[n]['ore']*4, "Sat%": round((ore_f[n]/(info_f[n]['ore']*4)*100),1) if info_f[n]['ore']>0 else 0} for n in tab.index if "(GET)" not in n])
-    tot_row = pd.DataFrame({"Operatore": ["TOTALI SQUADRA"], "Notti": [an_df["Notti"].sum()], "WE Liberi": [an_df["WE Liberi"].sum()], "Ore Eff.": [an_df["Ore Eff."].sum()], "Target": [an_df["Target"].sum()], "Sat%": [0]})
+    tot_row = pd.DataFrame({"Operatore": ["TOTALI"], "Notti": [an_df["Notti"].sum()], "WE Liberi": [an_df["WE Liberi"].sum()], "Ore Eff.": [an_df["Ore Eff."].sum()], "Target": [an_df["Target"].sum()], "Sat%": [0]})
     st.table(pd.concat([an_df, tot_row], ignore_index=True).set_index("Operatore"))
 
-    st.download_button("📥 Excel Completo", data=to_excel(tab, an_df, cop_df, gett_input_df), file_name=f"Turni_{m_sel}.xlsx")
+    st.download_button("📥 Excel", data=to_excel(tab, an_df, cop_df, gett_input_df), file_name=f"Turni_{m_sel}.xlsx")
