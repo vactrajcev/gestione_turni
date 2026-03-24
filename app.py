@@ -6,8 +6,8 @@ import os
 from io import BytesIO
 from datetime import datetime
 
-# --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V65.2", layout="wide", page_icon="⚖️")
+# --- CONFIGURAZIONE PAGINA ---
+st.set_page_config(page_title="Gestione Turni V65.4", layout="wide", page_icon="⚖️")
 
 DB_FILE = "database_turni_v65.json"
 
@@ -44,7 +44,7 @@ if 'operatori' not in st.session_state:
         {"nome": "MOSTACCHI M.", "ore": 25, "fa_notti": True, "max_notti": 10, "vincoli": []}
     ]
 
-st.title("⚖️ Sistema Turni V65.2 - PWA Ready")
+st.title("⚖️ Sistema Turni V65.4 - Versione Finale")
 
 # --- AREA GESTIONE DATI ---
 with st.expander("⚙️ Configurazione Squadra e Database"):
@@ -74,8 +74,8 @@ with st.expander("⚙️ Configurazione Squadra e Database"):
         num_rows="dynamic", 
         key="inc_editor",
         column_config={
-            "Op A": st.column_config.SelectboxColumn("Operatore A", options=lista_nomi),
-            "Op B": st.column_config.SelectboxColumn("Operatore B", options=lista_nomi)
+            "Op A": st.column_config.SelectboxColumn("Op A", options=lista_nomi),
+            "Op B": st.column_config.SelectboxColumn("Op B", options=lista_nomi)
         }
     )
 
@@ -105,7 +105,6 @@ def genera_piano(anno, mese):
     nomi = [o['nome'] for o in st.session_state.operatori if o['nome']]
     res = pd.DataFrame("-", index=nomi, columns=cols)
     
-    # QUI DEFINIAMO INFO PER EVITARE L'ERRORE NAMEERROR
     info_mappa = {o['nome']: o for o in st.session_state.operatori if o['nome']}
     vinc_map = {n: [v.lower() for v in r['vincoli']] if isinstance(r['vincoli'], list) else [] for n, r in info_mappa.items()}
     
@@ -116,10 +115,12 @@ def genera_piano(anno, mese):
         is_we = wd >= 5
         occ_oggi = []
 
+        # Regola 6 giorni
         for n in nomi:
             if consecutivi[n] >= 6:
                 res.at[n, col] = "R"; occ_oggi.append(n); consecutivi[n] = 0
 
+        # Preferenze
         pref_oggi = pref_df[pref_df['Giorno'].astype(str) == str(g)]
         for _, p in pref_oggi.iterrows():
             n, t = p['Operatore'], p['Turno']
@@ -129,6 +130,7 @@ def genera_piano(anno, mese):
                 consecutivi[n] += 1
                 if t == "N": notti_att[n]+=1; stato_ciclo[n]=1
 
+        # Ciclo Notti
         notte_occupata = (res[col] == "N").any()
         for n in nomi:
             if n in occ_oggi: continue
@@ -140,6 +142,7 @@ def genera_piano(anno, mese):
             elif stato_ciclo[n] in [2, 3]: 
                 res.at[n, col] = " "; occ_oggi.append(n); stato_ciclo[n] = 3 if stato_ciclo[n]==2 else 0; consecutivi[n]=0
 
+        # Target 2-2-1
         for t_tipo, qta in [("N", 1), ("M", 2), ("P", 2)]:
             while res[col].tolist().count(t_tipo) < qta:
                 cand = [n for n in nomi if n not in occ_oggi]
@@ -169,12 +172,12 @@ def genera_piano(anno, mese):
 
     return res, ore_att, notti_att, info_mappa
 
-# --- VISUALIZZAZIONE ---
+# --- VISUALIZZAZIONE FINALE ---
 mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 m_n = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA PIANO V65.2"):
+if st.button("🚀 GENERA PIANO V65.4"):
     tab, ore_f, notti_f, info_final = genera_piano(anno, mesi.index(m_n) + 1)
     
     st.subheader("📅 Tabellone Turni")
@@ -184,12 +187,13 @@ if st.button("🚀 GENERA PIANO V65.2"):
     check_list = []
     for c in tab.columns:
         m, p, n = tab[c].tolist().count("M"), tab[c].tolist().count("P"), tab[c].tolist().count("N")
-        ore_day = (m*7) + (p*8) + (n*9)
-        check_list.append({"Giorno": c, "M": m, "P": p, "N": n, "Ore": ore_day})
-    check_df = pd.DataFrame(check_list).set_index("Giorno").T
-    st.table(check_df) # Ora include la riga "Ore"
+        check_list.append({"Giorno": c, "M": m, "P": p, "N": n, "Ore": (m*7)+(p*8)+(n*9)})
     
-    st.subheader("📊 Analisi Equità")
+    c_df = pd.DataFrame(check_list).set_index("Giorno").T
+    c_df["TOTALE MESE"] = c_df.sum(axis=1) # Colonna totali a destra
+    st.table(c_df)
+    
+    st.subheader("📊 Analisi Squadra")
     an_data = []
     for n in tab.index:
         targ = info_final[n]['ore']*4
@@ -199,5 +203,15 @@ if st.button("🚀 GENERA PIANO V65.2"):
             "Sat%": round((ore_f[n]/targ*100), 1) if targ > 0 else 0
         })
     an_df = pd.DataFrame(an_data).set_index("Operatore")
-    st.table(an_df) # Errore NameError RISOLTO
-    st.download_button("📥 Excel", data=to_excel(tab, an_df), file_name=f"Turni_{m_n}.xlsx")
+    
+    # Riga Totali Squadra
+    tot_row = pd.DataFrame({
+        "Notti": [an_df["Notti"].sum()], "Max N": [an_df["Max N"].sum()],
+        "Ore Eff.": [an_df["Ore Eff."].sum()], "Target": [an_df["Target"].sum()],
+        "Sat%": [round((an_df["Ore Eff."].sum()/an_df["Target"].sum()*100), 1) if an_df["Target"].sum() > 0 else 0]
+    }, index=["TOTALI"])
+    
+    an_final = pd.concat([an_df, tot_row])
+    st.table(an_final)
+    
+    st.download_button("📥 Scarica Excel", data=to_excel(tab, an_final), file_name=f"Turni_{m_n}.xlsx")
