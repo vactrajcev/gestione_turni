@@ -7,7 +7,7 @@ from io import BytesIO
 from datetime import datetime
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V66.0", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Gestione Turni V66.1", layout="wide", page_icon="⚖️")
 
 DB_FILE = "database_turni_v66.json"
 
@@ -38,7 +38,7 @@ if 'operatori' not in st.session_state:
         {"nome": "MISELMI H.", "ore": 38, "fa_notti": True, "max_notti": 10, "vincoli": []}
     ]
 
-st.title("⚖️ Sistema Turni V66.0 - Compatibilità Ripristinata")
+st.title("⚖️ Sistema Turni V66.1 - Regola No P->M")
 
 # --- UI GESTIONE ---
 with st.expander("⚙️ Configurazione Squadra e Incompatibilità"):
@@ -81,6 +81,7 @@ def genera_piano(anno, mese):
 
     for g in range(1, num_g + 1):
         wd, col = calendar.weekday(anno, mese, g), cols[g-1]
+        col_prev = cols[g-2] if g > 1 else None
         is_we, occ_oggi = wd >= 5, []
 
         # 1. REGOLA SPECIALE: NoWeekEnd + Solo Mattina
@@ -88,6 +89,7 @@ def genera_piano(anno, mese):
             for n in nomi:
                 v = vinc_m.get(n, [])
                 if "no weekend" in v and "solo mattina" in v:
+                    # Controllo assenze e regola P->M (anche se questi fanno solo M, meglio prevenire)
                     if not any(r['Operatore']==n and pd.notna(r['Dal']) and int(r['Dal'])<=g<=(int(r['Al']) if pd.notna(r['Al']) else int(r['Dal'])) for _, r in ass_df.iterrows()):
                         res.at[n, col] = "M"; occ_oggi.append(n); ore_att[n] += 7; cons[n] += 1
 
@@ -101,6 +103,9 @@ def genera_piano(anno, mese):
         for _, p in p_oggi.iterrows():
             n, t = p['Operatore'], p['Turno']
             if n in nomi and n not in occ_oggi:
+                # Applica regola P->M anche alle preferenze per sicurezza
+                if t == "M" and col_prev and res.at[n, col_prev] == "P":
+                    continue 
                 res.at[n, col] = t; occ_oggi.append(n); ore_att[n] += (9 if t=="N" else 7 if t=="M" else 8); cons[n] += 1
                 if t == "N": notti_att[n]+=1; stato_c[n]=1
 
@@ -117,24 +122,29 @@ def genera_piano(anno, mese):
             elif stato_c[n] == 3: # Riposo
                 res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=0; cons[n]=0
 
-        # 5. RIEMPIMENTO CON CONTROLLO INCOMPATIBILITÀ
+        # 5. RIEMPIMENTO
         for t_tipo, qta in [("N", 1), ("M", 2), ("P", 2)]:
             while res[col].tolist().count(t_tipo) < qta:
                 cand = [n for n in nomi if n not in occ_oggi]
                 cand_f = []
                 for n in cand:
                     v, ok = vinc_m.get(n, []), True
+                    
+                    # --- NUOVA REGOLA: NO MATTINA DOPO POMERIGGIO ---
+                    if t_tipo == "M" and col_prev and res.at[n, col_prev] == "P":
+                        ok = False
+                    
                     # Controllo Assenze
                     if any(r['Operatore']==n and pd.notna(r['Dal']) and int(r['Dal'])<=g<=(int(r['Al']) if pd.notna(r['Al']) else int(r['Dal'])) for _, r in ass_df.iterrows()): ok = False
-                    # Controllo Vincoli Notti e Orari
+                    # Vincoli Notti e Orari
                     if t_tipo == "N" and (not info_m[n]['fa_notti'] or notti_att[n] >= info_m[n]['max_notti']): ok = False
                     if is_we and "no weekend" in v: ok = False
                     if t_tipo == "M" and ("solo pomeriggio" in v or "no mattina" in v): ok = False
                     if t_tipo == "P" and ("solo mattina" in v or "no pomeriggio" in v): ok = False
                     
-                    # --- LOGICA INCOMPATIBILITÀ ---
+                    # Incompatibilità
                     for gia_in_turno in occ_oggi:
-                        if res.at[gia_in_turno, col] == t_tipo: # Se lavorano nello stesso turno
+                        if res.at[gia_in_turno, col] == t_tipo:
                             incomp = inc_df[((inc_df['Op A']==n) & (inc_df['Op B']==gia_in_turno)) | 
                                             ((inc_df['Op A']==gia_in_turno) & (inc_df['Op B']==n))]
                             if not incomp.empty: ok = False
@@ -155,7 +165,7 @@ mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", 
 m_sel = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA PIANO V66.0"):
+if st.button("🚀 GENERA PIANO V66.1"):
     tab, ore_f, notti_f, info_final = genera_piano(anno, mesi.index(m_sel) + 1)
     st.subheader("📅 Tabellone Turni")
     st.dataframe(tab, use_container_width=True)
