@@ -7,7 +7,7 @@ from io import BytesIO
 from datetime import datetime
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V66.4 - WE Guaranteed", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Gestione Turni V66.5 - Full Stats", layout="wide", page_icon="⚖️")
 
 DB_FILE = "database_turni_v66.json"
 
@@ -21,11 +21,12 @@ def carica_dati():
 def salva_dati(operatori):
     with open(DB_FILE, "w") as f: json.dump(operatori, f)
 
-def to_excel(df, analisi_df):
+def to_excel(df, analisi_df, copertura_df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Tabella Turni')
         analisi_df.to_excel(writer, sheet_name='Analisi Equità')
+        copertura_df.to_excel(writer, sheet_name='Copertura Oraria')
     return output.getvalue()
 
 # --- INIZIALIZZAZIONE ---
@@ -42,7 +43,7 @@ if 'operatori' not in st.session_state:
         {"nome": "MOSTACCHI M.", "ore": 25, "fa_notti": True, "max_notti": 10, "vincoli": []}
     ]
 
-st.title("⚖️ Sistema Turni V66.4 - Garanzia Weekend Libero")
+st.title("⚖️ Sistema Turni V66.5 - Report Completo 2-2-1")
 
 # --- UI GESTIONE ---
 with st.expander("⚙️ Squadra & Vincoli"):
@@ -77,20 +78,15 @@ def genera_piano(anno, mese):
     
     ore_att, notti_att, stato_c, cons = {n: 0 for n in nomi}, {n: 0 for n in nomi}, {n: 0 for n in nomi}, {n: 0 for n in nomi}
     
-    # --- LOGICA GARANZIA WEEKEND ---
+    # Logica Weekend Protetto
     weekend_list = []
     for g in range(1, num_g):
-        if calendar.weekday(anno, mese, g) == 5: # Sabato
-            weekend_list.append((g, g+1))
-            
-    # Assegna a ogni operatore un weekend "sacro" (libero)
+        if calendar.weekday(anno, mese, g) == 5: weekend_list.append((g, g+1))
+    
     we_protetto = {}
     for i, n in enumerate(nomi):
-        if "no weekend" in vinc_m.get(n, []):
-            we_protetto[n] = -1 # Già protetto dai vincoli
-        else:
-            # Distribuisce gli operatori sui weekend disponibili
-            we_protetto[n] = weekend_list[i % len(weekend_list)]
+        if "no weekend" in vinc_m.get(n, []): we_protetto[n] = -1
+        else: we_protetto[n] = weekend_list[i % len(weekend_list)] if weekend_list else -1
 
     for g in range(1, num_g + 1):
         wd, col = calendar.weekday(anno, mese, g), cols[g-1]
@@ -98,7 +94,7 @@ def genera_piano(anno, mese):
         is_we = wd >= 5
         occ_oggi = []
 
-        # 1. SPECIAL RULE: NoWeekend + Solo Mattina
+        # 1. SPECIAL RULE: NoWeekend + Solo Mattina (Lun-Ven)
         if not is_we:
             for n in nomi:
                 v = vinc_m.get(n, [])
@@ -125,34 +121,28 @@ def genera_piano(anno, mese):
         for n in nomi:
             if n in occ_oggi: continue
             if stato_c[n] == 1: # N2
-                # Check se domani è il weekend protetto!
                 if not n_assegnata and info_m[n]['fa_notti'] and notti_att[n] < info_m[n]['max_notti']:
                     res.at[n, col] = "N"; occ_oggi.append(n); ore_att[n]+=9; notti_att[n]+=1; stato_c[n]=2; cons[n]+=1; n_assegnata=True
-                else: res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=3; cons[n]=0
+                else: res.at[n, col] = " "; occ_oggi.append(n); stato_c[n] = 3; cons[n] = 0
             elif stato_c[n] == 2: # Smonto
-                res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=3; cons[n]=0
+                res.at[n, col] = " "; occ_oggi.append(n); stato_c[n] = 3; cons[n] = 0
             elif stato_c[n] == 3: # Riposo
-                res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=0; cons[n]=0
+                res.at[n, col] = " "; occ_oggi.append(n); stato_c[n] = 0; cons[n] = 0
 
-        # 5. RIEMPIMENTO CON VINCOLO WEEKEND GARANTITO
+        # 5. RIEMPIMENTO 2-2-1
         for t_tipo, qta in [("N", 1), ("M", 2), ("P", 2)]:
             while res[col].tolist().count(t_tipo) < qta:
                 cand = [n for n in nomi if n not in occ_oggi]
                 cand_f = []
                 for n in cand:
                     v, ok = vinc_m.get(n, []), True
-                    
-                    # --- CONTROLLO WEEKEND GARANTITO ---
-                    if n in we_protetto and we_protetto[n] != -1:
-                        if g in we_protetto[n]: ok = False # Se è il suo weekend protetto, NON può lavorare
-                    
+                    if n in we_protetto and we_protetto[n] != -1 and g in we_protetto[n]: ok = False
                     if t_tipo == "M" and col_prev and res.at[n, col_prev] == "P": ok = False
                     if any(r['Operatore']==n and pd.notna(r['Dal']) and int(r['Dal'])<=g<=(int(r['Al']) if pd.notna(r['Al']) else int(r['Dal'])) for _, r in ass_df.iterrows()): ok = False
                     if t_tipo == "N" and (not info_m[n]['fa_notti'] or notti_att[n] >= info_m[n]['max_notti']): ok = False
                     if is_we and "no weekend" in v: ok = False
                     if t_tipo == "M" and ("solo pomeriggio" in v or "no mattina" in v): ok = False
                     if t_tipo == "P" and ("solo mattina" in v or "no pomeriggio" in v): ok = False
-                    
                     for gia_in in occ_oggi:
                         if res.at[gia_in, col] == t_tipo:
                             if not inc_df[((inc_df['Op A']==n) & (inc_df['Op B']==gia_in)) | ((inc_df['Op A']==gia_in) & (inc_df['Op B']==n))].empty: ok = False
@@ -167,7 +157,7 @@ def genera_piano(anno, mese):
         for n in nomi:
             if res.at[n, col] in ["-", " ", "R"]: cons[n] = 0
             
-    # Conteggio WE Liberi per analisi
+    # Conteggio WE Liberi
     we_liberi = {n: 0 for n in nomi}
     for n in nomi:
         for sab, dom in weekend_list:
@@ -181,12 +171,43 @@ mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", 
 m_sel = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA PIANO V66.4"):
+if st.button("🚀 GENERA REPORT COMPLETO V66.5"):
     tab, ore_f, notti_f, info_f, we_f = genera_piano(anno, mesi.index(m_sel) + 1)
+    
+    st.subheader("📅 Tabellone Turni Mensile")
     st.dataframe(tab, use_container_width=True)
     
-    st.subheader("📊 Analisi Squadra (Minimo 1 WE Libero Garantito)")
-    an_data = [{"Operatore": n, "Notti": notti_f[n], "WE Liberi": we_f[n], "Ore Eff.": ore_f[n], "Target": info_f[n]['ore']*4, "Sat%": round((ore_f[n]/(info_f[n]['ore']*4)*100), 1) if info_f[n]['ore']>0 else 0} for n in tab.index]
-    an_df = pd.DataFrame(an_data).set_index("Operatore")
-    st.table(an_df)
-    st.download_button("📥 Excel", data=to_excel(tab, an_df), file_name=f"Turni_{m_sel}.xlsx")
+    # --- NUOVA TABELLA COPERTURA 2-2-1 ---
+    st.subheader("✅ Tabella di Copertura (Standard 2-2-1)")
+    cop_list = []
+    for c in tab.columns:
+        m = tab[c].tolist().count("M")
+        p = tab[c].tolist().count("P")
+        n = tab[c].tolist().count("N")
+        ore_tot = (m*7) + (p*8) + (n*9)
+        cop_list.append({"Giorno": c, "M (Target 2)": m, "P (Target 2)": p, "N (Target 1)": n, "Ore Totali": ore_tot})
+    
+    cop_df = pd.DataFrame(cop_list).set_index("Giorno").T
+    st.table(cop_df)
+    
+    # --- TABELLA ANALISI CON TOTALI ---
+    st.subheader("📊 Analisi Squadra ed Equità")
+    an_data = [{"Operatore": n, "Notti": notti_f[n], "WE Liberi": we_f[n], "Ore Eff.": ore_f[n], "Target Mensile": info_f[n]['ore']*4, "Sat%": round((ore_f[n]/(info_f[n]['ore']*4)*100), 1) if info_f[n]['ore']>0 else 0} for n in tab.index]
+    an_df = pd.DataFrame(an_data)
+    
+    # Riga Totali
+    totali = pd.DataFrame({
+        "Operatore": ["TOTALI SQUADRA"],
+        "Notti": [an_df["Notti"].sum()],
+        "WE Liberi": [an_df["WE Liberi"].sum()],
+        "Ore Eff.": [an_df["Ore Eff."].sum()],
+        "Target Mensile": [an_df["Target Mensile"].sum()],
+        "Sat%": [round((an_df["Ore Eff."].sum() / an_df["Target Mensile"].sum() * 100), 1) if an_df["Target Mensile"].sum() > 0 else 0]
+    })
+    
+    final_analysis = pd.concat([an_df, totali], ignore_index=True).set_index("Operatore")
+    st.table(final_analysis)
+    
+    st.download_button("📥 Scarica Report Excel Completo", 
+                       data=to_excel(tab, final_analysis, cop_df), 
+                       file_name=f"Turni_Completi_{m_sel}_{anno}.xlsx")
