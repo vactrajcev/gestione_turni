@@ -168,9 +168,9 @@ def genera_piano(anno, mese):
 # --- VISUALIZZAZIONE ---
 mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 m_sel = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
-anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
+anno = st.sidebar.number_input("Anno", min_value=2026, value=2026)
 
-if st.button("🚀 GENERA REPORT V66.9"):
+if st.button("🚀 GENERA REPORT"):
     tab, ore_f, notti_f, info_f, we_f = genera_piano(anno, mesi.index(m_sel) + 1)
     st.dataframe(tab, use_container_width=True)
     
