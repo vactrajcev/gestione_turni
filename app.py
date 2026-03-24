@@ -7,7 +7,7 @@ from io import BytesIO
 from datetime import datetime
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V66.6 - Total Control", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Gestione Turni V66.7 - Menu Ripristinati", layout="wide", page_icon="⚖️")
 
 DB_FILE = "database_turni_v66.json"
 
@@ -39,27 +39,61 @@ if 'operatori' not in st.session_state:
         {"nome": "MISELMI H.", "ore": 38, "fa_notti": True, "max_notti": 10, "vincoli": []}
     ]
 
-st.title("⚖️ Sistema Turni V66.6 - Analisi Completa")
+st.title("⚖️ Sistema Turni V66.7 - Menu a Tendina e Totali")
 
 # --- UI GESTIONE ---
-with st.expander("⚙️ Squadra & Vincoli"):
-    op_df = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic", key="editor_op")
+with st.expander("⚙️ Configurazione Squadra"):
+    # Editor Operatori con Menu Vincoli
+    op_df = st.data_editor(
+        pd.DataFrame(st.session_state.operatori), 
+        num_rows="dynamic", 
+        key="editor_op",
+        column_config={
+            "vincoli": st.column_config.MultiselectColumn(
+                "Vincoli", 
+                options=["No Weekend", "Solo Mattina", "Solo Pomeriggio", "No Mattina", "No Pomeriggio"]
+            ),
+            "fa_notti": st.column_config.CheckboxColumn("Notti?")
+        }
+    )
     lista_nomi = op_df['nome'].dropna().unique().tolist()
-    if st.button("💾 Salva Squadra"):
+    
+    if st.button("💾 Salva Database"):
         st.session_state.operatori = op_df.to_dict('records')
         salva_dati(st.session_state.operatori)
         st.success("Dati salvati!")
 
-    st.subheader("🤝 Incompatibilità")
-    inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_ed")
+    st.subheader("🤝 Coppie Incompatibili")
+    inc_df = st.data_editor(
+        pd.DataFrame(columns=["Op A", "Op B"]), 
+        num_rows="dynamic", 
+        key="inc_ed",
+        column_config={
+            "Op A": st.column_config.SelectboxColumn("Operatore 1", options=lista_nomi),
+            "Op B": st.column_config.SelectboxColumn("Operatore 2", options=lista_nomi)
+        }
+    )
 
 col_ass, col_pref = st.columns(2)
 with col_ass:
     st.subheader("🚫 Assenze")
-    ass_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Dal", "Al"]), num_rows="dynamic")
+    ass_df = st.data_editor(
+        pd.DataFrame(columns=["Operatore", "Dal", "Al"]), 
+        num_rows="dynamic",
+        column_config={
+            "Operatore": st.column_config.SelectboxColumn("Op", options=lista_nomi)
+        }
+    )
 with col_pref:
     st.subheader("⭐ Preferenze")
-    pref_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Giorno", "Turno"]), num_rows="dynamic")
+    pref_df = st.data_editor(
+        pd.DataFrame(columns=["Operatore", "Giorno", "Turno"]), 
+        num_rows="dynamic",
+        column_config={
+            "Operatore": st.column_config.SelectboxColumn("Op", options=lista_nomi),
+            "Turno": st.column_config.SelectboxColumn("T", options=["M", "P", "N"])
+        }
+    )
 
 # --- MOTORE DI CALCOLO ---
 def genera_piano(anno, mese):
@@ -72,10 +106,10 @@ def genera_piano(anno, mese):
     
     ore_att, notti_att, stato_c, cons = {n: 0 for n in nomi}, {n: 0 for n in nomi}, {n: 0 for n in nomi}, {n: 0 for n in nomi}
     
-    # Logic Weekend Protetto
     weekend_list = []
     for g in range(1, num_g):
         if calendar.weekday(anno, mese, g) == 5: weekend_list.append((g, g+1))
+    
     we_protetto = {n: (weekend_list[i % len(weekend_list)] if weekend_list else -1) for i, n in enumerate(nomi)}
 
     for g in range(1, num_g + 1):
@@ -152,11 +186,10 @@ mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", 
 m_sel = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA REPORT V66.6"):
+if st.button("🚀 GENERA REPORT V66.7"):
     tab, ore_f, notti_f, info_f, we_f = genera_piano(anno, mesi.index(m_sel) + 1)
     st.dataframe(tab, use_container_width=True)
     
-    # --- TABELLA COPERTURA CON TOTALI RIGA E COLONNA ---
     st.subheader("✅ Tabella Copertura Mensile (2-2-1)")
     cop_list = []
     for c in tab.columns:
@@ -164,11 +197,9 @@ if st.button("🚀 GENERA REPORT V66.6"):
         cop_list.append({"G": c, "Mattina (M)": m, "Pomeriggio (P)": p, "Notte (N)": n, "Ore Erogate": (m*7)+(p*8)+(n*9)})
     
     cop_df = pd.DataFrame(cop_list).set_index("G").T
-    # Aggiunta colonna TOTALI a destra
     cop_df["TOTALE MESE"] = cop_df.sum(axis=1)
     st.table(cop_df)
     
-    # --- TABELLA ANALISI CON TOTALI IN FONDO ---
     st.subheader("📊 Analisi Squadra ed Equità")
     an_df = pd.DataFrame([{"Operatore": n, "Notti": notti_f[n], "WE Liberi": we_f[n], "Ore Eff.": ore_f[n], "Target": info_f[n]['ore']*4, "Sat%": round((ore_f[n]/(info_f[n]['ore']*4)*100),1) if info_f[n]['ore']>0 else 0} for n in tab.index])
     
