@@ -1,0 +1,15 @@
+{
+  "name": "Gestione Turni Pro",
+  "short_name": "Turni",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0e1117",
+  "theme_color": "#ff4b4b",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2370/2370264.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
