@@ -7,7 +7,7 @@ from io import BytesIO
 from datetime import datetime
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V66.9 - WE & Smonto", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Gestione Turni", layout="wide", page_icon="⚖️")
 
 DB_FILE = "database_turni_v66.json"
 
