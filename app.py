@@ -7,7 +7,7 @@ from io import BytesIO
 from datetime import datetime
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V66.2 - Smart Weekend", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Gestione Turni V66.3 - Analysis Pro", layout="wide", page_icon="⚖️")
 
 DB_FILE = "database_turni_v66.json"
 
@@ -38,7 +38,7 @@ if 'operatori' not in st.session_state:
         {"nome": "MISELMI H.", "ore": 38, "fa_notti": True, "max_notti": 10, "vincoli": []}
     ]
 
-st.title("⚖️ Sistema Turni V66.2 - Smart Weekend & No P->M")
+st.title("⚖️ Sistema Turni V66.3 - Weekend Analysis")
 
 # --- UI GESTIONE ---
 with st.expander("⚙️ Configurazione Squadra"):
@@ -74,7 +74,7 @@ def genera_piano(anno, mese):
     vinc_m = {n: [v.lower() for v in r['vincoli']] if isinstance(r['vincoli'], list) else [] for n, r in info_m.items()}
     
     ore_att, notti_att, stato_c, cons = {n: 0 for n in nomi}, {n: 0 for n in nomi}, {n: 0 for n in nomi}, {n: 0 for n in nomi}
-    we_lavorati = {n: 0 for n in nomi} # Contatore weekend impegnati
+    we_lavorati = {n: 0 for n in nomi} 
 
     for g in range(1, num_g + 1):
         wd, col = calendar.weekday(anno, mese, g), cols[g-1]
@@ -82,7 +82,7 @@ def genera_piano(anno, mese):
         is_we = wd >= 5
         occ_oggi = []
 
-        # 1. REGOLA NoWeekEnd + Solo Mattina (Lavora Lun-Ven)
+        # 1. SPECIAL RULE: NoWeekend + Solo Mattina
         if not is_we:
             for n in nomi:
                 v = vinc_m.get(n, [])
@@ -95,7 +95,7 @@ def genera_piano(anno, mese):
             if cons[n] >= 6 and n not in occ_oggi:
                 res.at[n, col] = " "; occ_oggi.append(n); cons[n] = 0
 
-        # 3. PREFERENZE (con check P->M)
+        # 3. PREFERENZE
         p_oggi = pref_df[pref_df['Giorno'].astype(str) == str(g)]
         for _, p in p_oggi.iterrows():
             n, t = p['Operatore'], p['Turno']
@@ -119,7 +119,7 @@ def genera_piano(anno, mese):
             elif stato_c[n] == 3: # Riposo
                 res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=0; cons[n]=0
 
-        # 5. RIEMPIMENTO SMART (Incompatibilità + P->M + Weekend Fair)
+        # 5. RIEMPIMENTO
         for t_tipo, qta in [("N", 1), ("M", 2), ("P", 2)]:
             while res[col].tolist().count(t_tipo) < qta:
                 cand = [n for n in nomi if n not in occ_oggi]
@@ -132,16 +132,12 @@ def genera_piano(anno, mese):
                     if is_we and "no weekend" in v: ok = False
                     if t_tipo == "M" and ("solo pomeriggio" in v or "no mattina" in v): ok = False
                     if t_tipo == "P" and ("solo mattina" in v or "no pomeriggio" in v): ok = False
-                    
-                    # Check Incompatibilità
                     for gia_in in occ_oggi:
                         if res.at[gia_in, col] == t_tipo:
                             if not inc_df[((inc_df['Op A']==n) & (inc_df['Op B']==gia_in)) | ((inc_df['Op A']==gia_in) & (inc_df['Op B']==n))].empty: ok = False
                     if ok: cand_f.append(n)
                 
                 if not cand_f: break
-                
-                # PRIORITÀ: Se è weekend, scegli chi ha lavorato meno weekend finora
                 if is_we:
                     scelto = min(cand_f, key=lambda x: (we_lavorati[x], notti_att[x] if t_tipo=="N" else ore_att[x]))
                     we_lavorati[scelto] += 1
@@ -149,21 +145,32 @@ def genera_piano(anno, mese):
                     scelto = min(cand_f, key=lambda x: (notti_att[x] if t_tipo=="N" else ore_att[x]/(info_m[x]['ore']*4) if info_m[x]['ore']>0 else 1))
                 
                 res.at[scelto, col] = t_tipo; occ_oggi.append(scelto)
-                ore_att[scelto] += (9 if t_tipo=="N" else 7 if t_tipo=="M" else 8)
-                cons[scelto] += 1
+                ore_att[scelto] += (9 if t_tipo=="N" else 7 if t_tipo=="M" else 8); cons[scelto] += 1
                 if t_tipo == "N": notti_att[scelto]+=1; stato_c[scelto]=1
 
         for n in nomi:
             if res.at[n, col] in ["-", " ", "R"]: cons[n] = 0
-    return res, ore_att, notti_att, info_m
+            
+    # --- CALCOLO WEEKEND LIBERI ---
+    we_liberi = {n: 0 for n in nomi}
+    for n in nomi:
+        for g in range(1, num_g):
+            wd = calendar.weekday(anno, mese, g)
+            if wd == 5: # Sabato
+                sab_libero = res.at[n, cols[g-1]] in ["-", " ", "R"]
+                dom_libero = res.at[n, cols[g]] in ["-", " ", "R"]
+                if sab_libero and dom_libero:
+                    we_liberi[n] += 1
+                    
+    return res, ore_att, notti_att, info_m, we_liberi
 
 # --- VISUALIZZAZIONE ---
 mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 m_sel = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA PIANO V66.2"):
-    tab, ore_f, notti_f, info_final = genera_piano(anno, mesi.index(m_sel) + 1)
+if st.button("🚀 GENERA PIANO V66.3"):
+    tab, ore_f, notti_f, info_final, we_f = genera_piano(anno, mesi.index(m_sel) + 1)
     st.subheader("📅 Tabellone Turni")
     st.dataframe(tab, use_container_width=True)
     
@@ -174,7 +181,7 @@ if st.button("🚀 GENERA PIANO V66.2"):
     st.table(c_df)
     
     st.subheader("📊 Analisi Squadra & Equità")
-    an_data = [{"Operatore": n, "Notti": notti_f[n], "Max": info_final[n]['max_notti'], "Ore Eff.": ore_f[n], "Target": info_final[n]['ore']*4, "Sat%": round((ore_f[n]/(info_final[n]['ore']*4)*100), 1) if info_final[n]['ore']>0 else 0} for n in tab.index]
+    an_data = [{"Operatore": n, "Notti": notti_f[n], "WE Liberi": we_f[n], "Ore Eff.": ore_f[n], "Target": info_final[n]['ore']*4, "Sat%": round((ore_f[n]/(info_final[n]['ore']*4)*100), 1) if info_final[n]['ore']>0 else 0} for n in tab.index]
     an_df = pd.DataFrame(an_data).set_index("Operatore")
-    st.table(pd.concat([an_df, pd.DataFrame({"Notti": [an_df["Notti"].sum()], "Max": [an_df["Max"].sum()], "Ore Eff.": [an_df["Ore Eff."].sum()], "Target": [an_df["Target"].sum()], "Sat%": [0]}, index=["TOTALI"])]))
+    st.table(pd.concat([an_df, pd.DataFrame({"Notti": [an_df["Notti"].sum()], "WE Liberi": [an_df["WE Liberi"].sum()], "Ore Eff.": [an_df["Ore Eff."].sum()], "Target": [an_df["Target"].sum()], "Sat%": [0]}, index=["TOTALI"])]))
     st.download_button("📥 Excel", data=to_excel(tab, an_df), file_name=f"Turni_{m_sel}.xlsx")
