@@ -7,7 +7,7 @@ from io import BytesIO
 from datetime import datetime
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V66.5 - Full Stats", layout="wide", page_icon="⚖️")
+st.set_page_config(page_title="Gestione Turni V66.6 - Total Control", layout="wide", page_icon="⚖️")
 
 DB_FILE = "database_turni_v66.json"
 
@@ -36,14 +36,10 @@ if 'operatori' not in st.session_state:
         {"nome": "NERI ELENA", "ore": 38, "fa_notti": True, "max_notti": 5, "vincoli": ["No Pomeriggio"]},
         {"nome": "RISTOVA SIMONA", "ore": 38, "fa_notti": False, "max_notti": 0, "vincoli": ["Solo Mattina", "No Weekend"]},
         {"nome": "CAMMARATA M.", "ore": 38, "fa_notti": True, "max_notti": 10, "vincoli": []},
-        {"nome": "MISELMI H.", "ore": 38, "fa_notti": True, "max_notti": 10, "vincoli": []},
-        {"nome": "SAKLI BESMA", "ore": 38, "fa_notti": False, "max_notti": 0, "vincoli": []},
-        {"nome": "BERTOLETTI B.", "ore": 30, "fa_notti": False, "max_notti": 0, "vincoli": []},
-        {"nome": "PALMIERI J.", "ore": 25, "fa_notti": True, "max_notti": 10, "vincoli": []},
-        {"nome": "MOSTACCHI M.", "ore": 25, "fa_notti": True, "max_notti": 10, "vincoli": []}
+        {"nome": "MISELMI H.", "ore": 38, "fa_notti": True, "max_notti": 10, "vincoli": []}
     ]
 
-st.title("⚖️ Sistema Turni V66.5 - Report Completo 2-2-1")
+st.title("⚖️ Sistema Turni V66.6 - Analisi Completa")
 
 # --- UI GESTIONE ---
 with st.expander("⚙️ Squadra & Vincoli"):
@@ -55,9 +51,7 @@ with st.expander("⚙️ Squadra & Vincoli"):
         st.success("Dati salvati!")
 
     st.subheader("🤝 Incompatibilità")
-    inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_ed",
-                             column_config={"Op A": st.column_config.SelectboxColumn("Op 1", options=lista_nomi),
-                                            "Op B": st.column_config.SelectboxColumn("Op 2", options=lista_nomi)})
+    inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_ed")
 
 col_ass, col_pref = st.columns(2)
 with col_ass:
@@ -78,23 +72,18 @@ def genera_piano(anno, mese):
     
     ore_att, notti_att, stato_c, cons = {n: 0 for n in nomi}, {n: 0 for n in nomi}, {n: 0 for n in nomi}, {n: 0 for n in nomi}
     
-    # Logica Weekend Protetto
+    # Logic Weekend Protetto
     weekend_list = []
     for g in range(1, num_g):
         if calendar.weekday(anno, mese, g) == 5: weekend_list.append((g, g+1))
-    
-    we_protetto = {}
-    for i, n in enumerate(nomi):
-        if "no weekend" in vinc_m.get(n, []): we_protetto[n] = -1
-        else: we_protetto[n] = weekend_list[i % len(weekend_list)] if weekend_list else -1
+    we_protetto = {n: (weekend_list[i % len(weekend_list)] if weekend_list else -1) for i, n in enumerate(nomi)}
 
     for g in range(1, num_g + 1):
         wd, col = calendar.weekday(anno, mese, g), cols[g-1]
         col_prev = cols[g-2] if g > 1 else None
-        is_we = wd >= 5
-        occ_oggi = []
+        is_we, occ_oggi = wd >= 5, []
 
-        # 1. SPECIAL RULE: NoWeekend + Solo Mattina (Lun-Ven)
+        # 1. Regola NoWeekend + Solo Mattina
         if not is_we:
             for n in nomi:
                 v = vinc_m.get(n, [])
@@ -102,12 +91,12 @@ def genera_piano(anno, mese):
                     if not any(r['Operatore']==n and pd.notna(r['Dal']) and int(r['Dal'])<=g<=(int(r['Al']) if pd.notna(r['Al']) else int(r['Dal'])) for _, r in ass_df.iterrows()):
                         res.at[n, col] = "M"; occ_oggi.append(n); ore_att[n] += 7; cons[n] += 1
 
-        # 2. RIPOSO 6 GIORNI
+        # 2. Riposo 6 giorni
         for n in nomi:
             if cons[n] >= 6 and n not in occ_oggi:
                 res.at[n, col] = " "; occ_oggi.append(n); cons[n] = 0
 
-        # 3. PREFERENZE
+        # 3. Preferenze
         p_oggi = pref_df[pref_df['Giorno'].astype(str) == str(g)]
         for _, p in p_oggi.iterrows():
             n, t = p['Operatore'], p['Turno']
@@ -116,20 +105,18 @@ def genera_piano(anno, mese):
                 res.at[n, col] = t; occ_oggi.append(n); ore_att[n] += (9 if t=="N" else 7 if t=="M" else 8); cons[n] += 1
                 if t == "N": notti_att[n]+=1; stato_c[n]=1
 
-        # 4. CICLO NOTTE (N-N-S-R)
+        # 4. Ciclo Notte
         n_assegnata = (res[col] == "N").any()
         for n in nomi:
             if n in occ_oggi: continue
-            if stato_c[n] == 1: # N2
+            if stato_c[n] == 1:
                 if not n_assegnata and info_m[n]['fa_notti'] and notti_att[n] < info_m[n]['max_notti']:
                     res.at[n, col] = "N"; occ_oggi.append(n); ore_att[n]+=9; notti_att[n]+=1; stato_c[n]=2; cons[n]+=1; n_assegnata=True
-                else: res.at[n, col] = " "; occ_oggi.append(n); stato_c[n] = 3; cons[n] = 0
-            elif stato_c[n] == 2: # Smonto
-                res.at[n, col] = " "; occ_oggi.append(n); stato_c[n] = 3; cons[n] = 0
-            elif stato_c[n] == 3: # Riposo
-                res.at[n, col] = " "; occ_oggi.append(n); stato_c[n] = 0; cons[n] = 0
+                else: res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=3; cons[n]=0
+            elif stato_c[n] == 2: res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=3; cons[n]=0
+            elif stato_c[n] == 3: res.at[n, col] = " "; occ_oggi.append(n); stato_c[n]=0; cons[n]=0
 
-        # 5. RIEMPIMENTO 2-2-1
+        # 5. Riempimento 2-2-1
         for t_tipo, qta in [("N", 1), ("M", 2), ("P", 2)]:
             while res[col].tolist().count(t_tipo) < qta:
                 cand = [n for n in nomi if n not in occ_oggi]
@@ -157,13 +144,7 @@ def genera_piano(anno, mese):
         for n in nomi:
             if res.at[n, col] in ["-", " ", "R"]: cons[n] = 0
             
-    # Conteggio WE Liberi
-    we_liberi = {n: 0 for n in nomi}
-    for n in nomi:
-        for sab, dom in weekend_list:
-            if res.at[n, cols[sab-1]] in ["-", " ", "R"] and res.at[n, cols[dom-1]] in ["-", " ", "R"]:
-                we_liberi[n] += 1
-                    
+    we_liberi = {n: sum(1 for sab, dom in weekend_list if res.at[n, cols[sab-1]] in ["-", " ", "R"] and res.at[n, cols[dom-1]] in ["-", " ", "R"]) for n in nomi}
     return res, ore_att, notti_att, info_m, we_liberi
 
 # --- VISUALIZZAZIONE ---
@@ -171,43 +152,33 @@ mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", 
 m_sel = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA REPORT COMPLETO V66.5"):
+if st.button("🚀 GENERA REPORT V66.6"):
     tab, ore_f, notti_f, info_f, we_f = genera_piano(anno, mesi.index(m_sel) + 1)
-    
-    st.subheader("📅 Tabellone Turni Mensile")
     st.dataframe(tab, use_container_width=True)
     
-    # --- NUOVA TABELLA COPERTURA 2-2-1 ---
-    st.subheader("✅ Tabella di Copertura (Standard 2-2-1)")
+    # --- TABELLA COPERTURA CON TOTALI RIGA E COLONNA ---
+    st.subheader("✅ Tabella Copertura Mensile (2-2-1)")
     cop_list = []
     for c in tab.columns:
-        m = tab[c].tolist().count("M")
-        p = tab[c].tolist().count("P")
-        n = tab[c].tolist().count("N")
-        ore_tot = (m*7) + (p*8) + (n*9)
-        cop_list.append({"Giorno": c, "M (Target 2)": m, "P (Target 2)": p, "N (Target 1)": n, "Ore Totali": ore_tot})
+        m, p, n = tab[c].tolist().count("M"), tab[c].tolist().count("P"), tab[c].tolist().count("N")
+        cop_list.append({"G": c, "Mattina (M)": m, "Pomeriggio (P)": p, "Notte (N)": n, "Ore Erogate": (m*7)+(p*8)+(n*9)})
     
-    cop_df = pd.DataFrame(cop_list).set_index("Giorno").T
+    cop_df = pd.DataFrame(cop_list).set_index("G").T
+    # Aggiunta colonna TOTALI a destra
+    cop_df["TOTALE MESE"] = cop_df.sum(axis=1)
     st.table(cop_df)
     
-    # --- TABELLA ANALISI CON TOTALI ---
+    # --- TABELLA ANALISI CON TOTALI IN FONDO ---
     st.subheader("📊 Analisi Squadra ed Equità")
-    an_data = [{"Operatore": n, "Notti": notti_f[n], "WE Liberi": we_f[n], "Ore Eff.": ore_f[n], "Target Mensile": info_f[n]['ore']*4, "Sat%": round((ore_f[n]/(info_f[n]['ore']*4)*100), 1) if info_f[n]['ore']>0 else 0} for n in tab.index]
-    an_df = pd.DataFrame(an_data)
+    an_df = pd.DataFrame([{"Operatore": n, "Notti": notti_f[n], "WE Liberi": we_f[n], "Ore Eff.": ore_f[n], "Target": info_f[n]['ore']*4, "Sat%": round((ore_f[n]/(info_f[n]['ore']*4)*100),1) if info_f[n]['ore']>0 else 0} for n in tab.index])
     
-    # Riga Totali
-    totali = pd.DataFrame({
-        "Operatore": ["TOTALI SQUADRA"],
-        "Notti": [an_df["Notti"].sum()],
-        "WE Liberi": [an_df["WE Liberi"].sum()],
-        "Ore Eff.": [an_df["Ore Eff."].sum()],
-        "Target Mensile": [an_df["Target Mensile"].sum()],
-        "Sat%": [round((an_df["Ore Eff."].sum() / an_df["Target Mensile"].sum() * 100), 1) if an_df["Target Mensile"].sum() > 0 else 0]
+    totali_row = pd.DataFrame({
+        "Operatore": ["TOTALI"], "Notti": [an_df["Notti"].sum()], "WE Liberi": [an_df["WE Liberi"].sum()], 
+        "Ore Eff.": [an_df["Ore Eff."].sum()], "Target": [an_df["Target"].sum()], 
+        "Sat%": [round((an_df["Ore Eff."].sum()/an_df["Target"].sum()*100),1) if an_df["Target"].sum()>0 else 0]
     })
     
-    final_analysis = pd.concat([an_df, totali], ignore_index=True).set_index("Operatore")
-    st.table(final_analysis)
+    an_full = pd.concat([an_df, totali_row], ignore_index=True).set_index("Operatore")
+    st.table(an_full)
     
-    st.download_button("📥 Scarica Report Excel Completo", 
-                       data=to_excel(tab, final_analysis, cop_df), 
-                       file_name=f"Turni_Completi_{m_sel}_{anno}.xlsx")
+    st.download_button("📥 Scarica Report Excel", data=to_excel(tab, an_full, cop_df), file_name=f"Turni_{m_sel}.xlsx")
