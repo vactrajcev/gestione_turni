@@ -6,8 +6,8 @@ from datetime import datetime
 
 # --- CONFIGURAZIONE ---
 st.set_page_config(page_title="Gestione Turni V64.6 - Ultimate Fix", layout="wide")
-st.title("🗓️ Sistema Gestione Turni - V64.6")
-st.markdown("### 🛡️ Protezione Target 2-2-1 + Sincronizzazione Cicli/Preferenze")
+st.title("🗓️ Sistema Gestione Turni")
+st.markdown("### 🛡️ Target 2-2-1")
 
 def to_excel(df, analisi_df):
     output = BytesIO()
