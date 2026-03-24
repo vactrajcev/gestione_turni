@@ -5,9 +5,9 @@ from io import BytesIO
 from datetime import datetime
 
 # --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Gestione Turni V64.4 - Monthly Totals", layout="wide")
-st.title("🗓️ Sistema Gestione Turni - V64.4")
-st.markdown("### 📈 Riepilogo Mensile: Totali Orizzontali e Verticali")
+st.set_page_config(page_title="Gestione Turni V64.5 - Preference Fix", layout="wide")
+st.title("🗓️ Sistema Gestione Turni - V64.5")
+st.markdown("### 🛠️ Fix Preferenze: Rispetto rigoroso del Target 2-2-1")
 
 def to_excel(df, analisi_df):
     output = BytesIO()
@@ -29,11 +29,11 @@ if 'operatori' not in st.session_state:
         {"nome": "MOSTACCHI M.", "ore": 25, "fa_notti": True, "max_notti": 10, "vincoli": []}
     ]
 
-# --- 2. INPUT CON MENU A TENDINA ---
+# --- 2. INPUT ---
 col_op, col_inc = st.columns([1.5, 1])
 with col_op:
     st.subheader("👥 Operatori e Vincoli")
-    op_df = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic", key="op_v64_4",
+    op_df = st.data_editor(pd.DataFrame(st.session_state.operatori), num_rows="dynamic", key="op_v64_5",
                            column_config={
                                "vincoli": st.column_config.MultiselectColumn("Vincoli", options=["No Weekend", "Solo Mattina", "Solo Pomeriggio", "No Mattina", "No Pomeriggio"]),
                                "fa_notti": st.column_config.CheckboxColumn("Notti?")
@@ -42,7 +42,7 @@ with col_op:
 
 with col_inc:
     st.subheader("🤝 Incompatibilità")
-    inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_v64_4",
+    inc_df = st.data_editor(pd.DataFrame(columns=["Op A", "Op B"]), num_rows="dynamic", key="inc_v64_5",
                             column_config={
                                 "Op A": st.column_config.SelectboxColumn("Op A", options=lista_nomi),
                                 "Op B": st.column_config.SelectboxColumn("Op B", options=lista_nomi)
@@ -51,17 +51,17 @@ with col_inc:
 col_ass, col_pref = st.columns(2)
 with col_ass:
     st.subheader("🚫 Assenze")
-    ass_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Dal", "Al"]), num_rows="dynamic", key="ass_v64_4",
+    ass_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Dal", "Al"]), num_rows="dynamic", key="ass_v64_5",
                             column_config={"Operatore": st.column_config.SelectboxColumn("Op", options=lista_nomi)})
 with col_pref:
     st.subheader("⭐ Preferenze")
-    pref_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Giorno", "Turno"]), num_rows="dynamic", key="pref_v64_4",
+    pref_df = st.data_editor(pd.DataFrame(columns=["Operatore", "Giorno", "Turno"]), num_rows="dynamic", key="pref_v64_5",
                              column_config={
                                  "Operatore": st.column_config.SelectboxColumn("Op", options=lista_nomi),
                                  "Turno": st.column_config.SelectboxColumn("T", options=["M", "P", "N"])
                              })
 
-# --- 3. MOTORE V64.4 ---
+# --- 3. MOTORE V64.5 ---
 def genera_piano(anno, mese):
     num_g = calendar.monthrange(anno, mese)[1]
     cols = [f"{g}-{calendar.day_name[calendar.weekday(anno, mese, g)][:3]}" for g in range(1, num_g + 1)]
@@ -87,16 +87,24 @@ def genera_piano(anno, mese):
             elif stato_ciclo[n] == 2: res.at[n, col] = " "; occ_oggi.append(n); stato_ciclo[n]=3
             elif stato_ciclo[n] == 3: res.at[n, col] = " "; occ_oggi.append(n); stato_ciclo[n]=0
 
-        # B. PREFERENZE
-        for _, p in pref_df[pref_df['Giorno'].astype(str) == str(g)].iterrows():
+        # B. PREFERENZE (FIX: Sottrazione posti dai target)
+        pref_oggi = pref_df[pref_df['Giorno'].astype(str) == str(g)]
+        for _, p in pref_oggi.iterrows():
             n, t = p['Operatore'], p['Turno']
             if n in nomi and n not in occ_oggi:
-                res.at[n, col] = t; occ_oggi.append(n); ore_att[n] += (9 if t=="N" else 7 if t=="M" else 8)
-                if t == "N": notti_att[n]+=1; stato_ciclo[n]=1
+                res.at[n, col] = t
+                occ_oggi.append(n)
+                ore_att[n] += (9 if t=="N" else 7 if t=="M" else 8)
+                if t == "N": 
+                    notti_att[n]+=1
+                    stato_ciclo[n]=1
 
-        # C. ASSEGNAZIONE INTELLIGENTE
-        for t_tipo, qta in [("N", 1), ("M", 2), ("P", 2)]:
-            while res[col].tolist().count(t_tipo) < qta:
+        # C. ASSEGNAZIONE INTELLIGENTE (2M, 2P, 1N)
+        for t_tipo, qta_target in [("N", 1), ("M", 2), ("P", 2)]:
+            # Calcola quanti posti sono stati già presi dalle preferenze o dal ciclo N-N
+            posti_occupati = res[col].tolist().count(t_tipo)
+            
+            while posti_occupati < qta_target:
                 cand = [n for n in nomi if n not in occ_oggi]
                 cand_f = []
                 for n in cand:
@@ -112,7 +120,6 @@ def genera_piano(anno, mese):
                             if not inc_df[((inc_df['Op A']==n) & (inc_df['Op B']==o)) | ((inc_df['Op A']==o) & (inc_df['Op B']==n))].empty: ok = False
                     if ok: cand_f.append(n)
                 
-                # PROTOCOLLO EMERGENZA NOTTE
                 if not cand_f and t_tipo == "N":
                     cand_f = [n for n in nomi if n not in occ_oggi and puo_n[n] and notti_att[n] < lim_n[n]]
                 
@@ -129,10 +136,12 @@ def genera_piano(anno, mese):
                 else:
                     scelto = min(cand_f, key=get_prio)
                 
-                res.at[scelto, col] = t_tipo; occ_oggi.append(scelto)
+                res.at[scelto, col] = t_tipo
+                occ_oggi.append(scelto)
                 ore_att[scelto] += (9 if t_tipo=="N" else 7 if t_tipo=="M" else 8)
+                posti_occupati += 1
 
-    # --- ANALISI SQUADRA CON TOTALI ---
+    # Analisi Finale con Totale Squadra
     an_rows = []
     for n in nomi:
         r = res.loc[n].tolist()
@@ -141,30 +150,22 @@ def genera_piano(anno, mese):
         an_rows.append({"Operatore": n, "Notti": n_c, "Max": lim_n[n], "Ore Eff.": o_e, "Target": targ_ore[n], "Sat%": round(o_e/targ_ore[n]*100, 1) if targ_ore[n]>0 else 0})
     
     an_df = pd.DataFrame(an_rows)
-    tot_row = pd.DataFrame([{
-        "Operatore": "TOTALI", 
-        "Notti": an_df["Notti"].sum(), 
-        "Max": an_df["Max"].sum(), 
-        "Ore Eff.": an_df["Ore Eff."].sum(), 
-        "Target": an_df["Target"].sum(), 
-        "Sat%": round(an_df["Ore Eff."].sum() / an_df["Target"].sum() * 100, 1) if an_df["Target"].sum() > 0 else 0
-    }])
+    tot_row = pd.DataFrame([{"Operatore": "TOTALI", "Notti": an_df["Notti"].sum(), "Max": an_df["Max"].sum(), "Ore Eff.": an_df["Ore Eff."].sum(), "Target": an_df["Target"].sum(), "Sat%": round(an_df["Ore Eff."].sum() / an_df["Target"].sum() * 100, 1) if an_df["Target"].sum() > 0 else 0}])
     an_df = pd.concat([an_df, tot_row], ignore_index=True).set_index("Operatore")
     
     return res, an_df
 
-# --- 4. OUTPUT UI ---
+# --- 4. OUTPUT ---
 mesi = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 m_n = st.sidebar.selectbox("Mese", mesi, index=datetime.now().month - 1)
 anno = st.sidebar.number_input("Anno", min_value=2024, value=2026)
 
-if st.button("🚀 GENERA PIANO V64.4"):
+if st.button("🚀 GENERA PIANO V64.5"):
     tab, an = genera_piano(anno, mesi.index(m_n) + 1)
     st.subheader("📅 Tabellone Turni")
     st.dataframe(tab, use_container_width=True)
     
-    # --- TABELLA VERIFICA CON TOTALI MENSILI ---
-    st.subheader("✅ Verifica Copertura (con Totali Mensili)")
+    st.subheader("✅ Verifica Copertura Mensile")
     check_list = []
     for c in tab.columns:
         m, p, n = tab[c].tolist().count("M"), tab[c].tolist().count("P"), tab[c].tolist().count("N")
@@ -172,12 +173,9 @@ if st.button("🚀 GENERA PIANO V64.4"):
         check_list.append({"Giorno": c, "M": m, "P": p, "N": n, "Ore": ore_tot})
     
     check_df = pd.DataFrame(check_list).set_index("Giorno").T
-    
-    # Aggiunta colonna TOTALE MESE (Somma orizzontale)
     check_df["TOTALE MESE"] = check_df.sum(axis=1)
-    
     st.table(check_df)
     
     st.subheader("📊 Analisi Squadra")
     st.table(an)
-    st.download_button("📥 Scarica Excel", data=to_excel(tab, an), file_name=f"Turni_V64_4.xlsx")
+    st.download_button("📥 Scarica Excel", data=to_excel(tab, an), file_name=f"Turni_V64_5.xlsx")
