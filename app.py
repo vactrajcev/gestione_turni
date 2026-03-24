@@ -39,7 +39,7 @@ if 'operatori' not in st.session_state:
         {"nome": "MISELMI H.", "ore": 38, "fa_notti": True, "max_notti": 10, "vincoli": []}
     ]
 
-st.title("⚖️ Sistema Turni V66.9 - Weekend (Incluso Smonto)")
+st.title("⚖️ Sistema Turni")
 
 # --- UI GESTIONE ---
 with st.expander("⚙️ Configurazione Squadra"):
